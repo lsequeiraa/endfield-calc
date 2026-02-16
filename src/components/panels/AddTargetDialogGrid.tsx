@@ -74,7 +74,13 @@ export default function AddTargetDialogGrid({
 
   /* Pre-computed lowercase names to avoid repeated i18n lookups while typing */
   const searchIndex = useMemo(
-    () => new Map(availableItems.map((item) => [item.id, getItemName(item).toLowerCase()])),
+    () =>
+      new Map(
+        availableItems.map((item) => [
+          item.id,
+          getItemName(item).toLowerCase(),
+        ]),
+      ),
     [availableItems],
   );
 
@@ -107,22 +113,18 @@ export default function AddTargetDialogGrid({
     [tierCounts],
   );
 
-  const queuedIds = useMemo(
-    () => new Set(queue.map((q) => q.itemId)),
-    [queue],
-  );
+  const queuedIds = useMemo(() => new Set(queue.map((q) => q.itemId)), [queue]);
 
   const remainingSlots = MAX_TARGETS - existingTargetCount - queue.length;
 
-  /* Ref for stable handleDoubleClick (rerender-use-ref-transient-values) */
+  /* Refs for stable callbacks (rerender-use-ref-transient-values) */
   const queueRef = useRef(queue);
   queueRef.current = queue;
+  const defaultRateRef = useRef(defaultRate);
+  defaultRateRef.current = defaultRate;
 
   /* Item lookup map for StagingBar (js-index-maps) */
-  const itemMap = useMemo(
-    () => new Map(items.map((i) => [i.id, i])),
-    [items],
-  );
+  const itemMap = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
 
   /* ── Handlers ── */
 
@@ -133,10 +135,10 @@ export default function AddTargetDialogGrid({
         if (isRemoving) return prev.filter((q) => q.itemId !== itemId);
         const slotsLeft = MAX_TARGETS - existingTargetCount - prev.length;
         if (slotsLeft <= 0) return prev;
-        return [...prev, { itemId, rate: defaultRate }];
+        return [...prev, { itemId, rate: defaultRateRef.current }];
       });
     },
-    [defaultRate, existingTargetCount],
+    [existingTargetCount],
   );
 
   const updateQueueRate = useCallback((itemId: ItemId, rate: number) => {
@@ -167,11 +169,11 @@ export default function AddTargetDialogGrid({
       const slotsLeft = MAX_TARGETS - existingTargetCount - currentQueue.length;
       const isQueued = currentQueue.some((q) => q.itemId === itemId);
       if (slotsLeft <= 0 && !isQueued) return;
-      onBatchAddTargets([{ itemId, rate: defaultRate }]);
+      onBatchAddTargets([{ itemId, rate: defaultRateRef.current }]);
       setQueue([]);
       onOpenChange(false);
     },
-    [defaultRate, existingTargetCount, onBatchAddTargets, onOpenChange],
+    [existingTargetCount, onBatchAddTargets, onOpenChange],
   );
 
   /* ── Render ── */
@@ -181,9 +183,7 @@ export default function AddTargetDialogGrid({
       <DialogContent className="max-sm:inset-0 max-sm:max-w-none max-sm:h-dvh max-sm:rounded-none max-sm:translate-x-0 max-sm:translate-y-0 sm:max-w-6xl sm:h-[80vh] flex flex-col gap-0 p-0 overflow-hidden">
         {/* ── Header ── */}
         <DialogHeader className="px-3 sm:px-5 pt-5 pb-0 shrink-0">
-          <DialogTitle className="tracking-tight">
-            {t("title")}
-          </DialogTitle>
+          <DialogTitle className="tracking-tight">{t("title")}</DialogTitle>
           <DialogDescription className="sr-only">
             {t("dialogDescription")}
           </DialogDescription>
@@ -226,9 +226,7 @@ export default function AddTargetDialogGrid({
                 return (
                   <button
                     key={tier}
-                    onClick={() =>
-                      setActiveTier(isActive ? null : tier)
-                    }
+                    onClick={() => setActiveTier(isActive ? null : tier)}
                     className={cn(
                       "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-all cursor-pointer",
                       isActive
@@ -236,9 +234,7 @@ export default function AddTargetDialogGrid({
                         : "bg-transparent text-muted-foreground border-border hover:border-foreground/30 hover:text-foreground",
                     )}
                   >
-                    <span
-                      className={cn("w-1.5 h-1.5 rounded-full", tc.dot)}
-                    />
+                    <span className={cn("w-1.5 h-1.5 rounded-full", tc.dot)} />
                     {t("tierLabel", { tier: tier + 1 })}
                     <span className="opacity-60">
                       {tierCounts.get(tier) ?? 0}
@@ -307,9 +303,7 @@ export default function AddTargetDialogGrid({
                   key={item.id}
                   item={item}
                   isQueued={queuedIds.has(item.id)}
-                  isDisabled={
-                    remainingSlots <= 0 && !queuedIds.has(item.id)
-                  }
+                  isDisabled={remainingSlots <= 0 && !queuedIds.has(item.id)}
                   onToggle={toggleItem}
                   onDoubleClick={handleDoubleClick}
                 />
@@ -355,7 +349,9 @@ const ItemCell = memo(function ItemCell({
 
   return (
     <button
-      onClick={(e) => { if (e.detail === 1) onToggle(item.id); }}
+      onClick={(e) => {
+        if (e.detail === 1) onToggle(item.id);
+      }}
       onDoubleClick={() => onDoubleClick(item.id)}
       disabled={isDisabled}
       title={getItemName(item)}
@@ -398,7 +394,12 @@ const ItemCell = memo(function ItemCell({
 
       {/* Name overlay at bottom with tier-colored gradient scrim */}
       <div className="absolute inset-x-0 bottom-0 z-10">
-        <div className={cn("bg-gradient-to-t to-transparent pt-2 pb-1.5 px-1.5", tc.gradient)}>
+        <div
+          className={cn(
+            "bg-linear-to-t to-transparent pt-1 pb-1.5 px-1.5",
+            tc.gradient,
+          )}
+        >
           <span className="block text-[11px] leading-tight text-center text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] line-clamp-2">
             {getItemName(item)}
           </span>
@@ -496,10 +497,7 @@ const StagingBar = memo(function StagingBar({
                     }
                   }}
                   onBlur={(e) => {
-                    if (
-                      e.target.value === "" ||
-                        Number(e.target.value) < 1
-                    ) {
+                    if (e.target.value === "" || Number(e.target.value) < 1) {
                       onUpdateRate(q.itemId, 1);
                     }
                   }}
