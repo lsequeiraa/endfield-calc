@@ -251,7 +251,7 @@ export default function AddTargetDialogGrid({
               </Label>
               <Input
                 type="number"
-                value={defaultRate === 0 ? "" : defaultRate}
+                value={defaultRate}
                 onChange={(e) => {
                   const val = e.target.value;
                   if (val === "") {
@@ -262,12 +262,12 @@ export default function AddTargetDialogGrid({
                   }
                 }}
                 onBlur={(e) => {
-                  if (e.target.value === "" || Number(e.target.value) < 1) {
-                    setDefaultRate(1);
+                  if (e.target.value === "" || Number(e.target.value) < 0) {
+                    setDefaultRate(0);
                   }
                 }}
                 className="h-8 w-20 text-xs text-center font-mono"
-                min="1"
+                min="0"
                 step="1"
               />
               <span className="text-xs text-muted-foreground whitespace-nowrap">
@@ -486,7 +486,7 @@ const StagingBar = memo(function StagingBar({
                 {/* Rate input */}
                 <Input
                   type="number"
-                  value={q.rate === 0 ? "" : q.rate}
+                  value={q.rate}
                   onChange={(e) => {
                     const val = e.target.value;
                     if (val === "") {
@@ -496,13 +496,14 @@ const StagingBar = memo(function StagingBar({
                       if (!isNaN(num)) onUpdateRate(q.itemId, num);
                     }
                   }}
+                  onFocus={(e) => e.target.select()}
                   onBlur={(e) => {
-                    if (e.target.value === "" || Number(e.target.value) < 1) {
-                      onUpdateRate(q.itemId, 1);
+                    if (e.target.value === "" || Number(e.target.value) < 0) {
+                      onUpdateRate(q.itemId, 0);
                     }
                   }}
                   className="h-6 w-14 text-[11px] text-center font-mono px-1 bg-background"
-                  min="1"
+                  min="0"
                   step="1"
                 />
 
