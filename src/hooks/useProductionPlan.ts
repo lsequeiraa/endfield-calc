@@ -1,6 +1,6 @@
 import { calculateProductionPlan } from "@/lib/calculator";
 import { items, recipes, facilities, MAX_TARGETS } from "@/data";
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import type { ProductionTarget } from "@/components/panels/TargetItemsGrid";
 import type {
   ItemId,
@@ -11,6 +11,14 @@ import type {
 import { useTranslation } from "react-i18next";
 import { useProductionStats } from "./useProductionStats";
 import { useProductionTable } from "./useProductionTable";
+
+interface SavedPlan {
+  version: string;
+  targets: { itemId: string; rate: number }[];
+  recipeOverrides: Record<string, string>;
+  manualRawMaterials: string[];
+  ceilMode: boolean;
+}
 
 interface ParsedHashState {
   targets: ProductionTarget[];
@@ -123,6 +131,7 @@ function serializeHash(
 
   return params.toString();
 }
+
 
 export function useProductionPlan() {
   const { t } = useTranslation("app");
@@ -265,6 +274,66 @@ export function useProductionPlan() {
     });
   }, []);
 
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleSavePlan = useCallback(() => {
+    const data: SavedPlan = {
+      version: "1",
+      targets: targets.map((t) => ({ itemId: t.itemId, rate: t.rate })),
+      recipeOverrides: Object.fromEntries(recipeOverrides),
+      manualRawMaterials: Array.from(manualRawMaterials),
+      ceilMode,
+    };
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "production-plan.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [targets, recipeOverrides, manualRawMaterials, ceilMode]);
+
+  const handleOpenPlan = useCallback(() => {
+    if (!fileInputRef.current) {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".json,application/json";
+      input.onchange = (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const data = JSON.parse(ev.target?.result as string) as SavedPlan;
+            if (data.version !== "1") return;
+            setTargets(
+              data.targets.map((t) => ({ itemId: t.itemId as ItemId, rate: t.rate })),
+            );
+            setRecipeOverrides(
+              new Map(
+                Object.entries(data.recipeOverrides).map(([k, v]) => [
+                  k as ItemId,
+                  v as RecipeId,
+                ]),
+              ),
+            );
+            setManualRawMaterials(new Set(data.manualRawMaterials as ItemId[]));
+            setCeilMode(data.ceilMode);
+          } catch {
+            // ignore invalid files
+          }
+        };
+        reader.readAsText(file);
+      };
+      fileInputRef.current = input;
+    }
+    fileInputRef.current.value = "";
+    fileInputRef.current.click();
+  }, []);
+
   return {
     targets,
     setTargets,
@@ -286,5 +355,7 @@ export function useProductionPlan() {
     handleToggleRawMaterial,
     handleRecipeChange,
     handleAddClick,
+    handleSavePlan,
+    handleOpenPlan,
   };
 }

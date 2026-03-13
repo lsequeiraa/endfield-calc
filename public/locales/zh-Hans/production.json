@@ -49,6 +49,10 @@
     "targetDescription": "每分钟生产 {{item}} {{rate}}。",
     "targetRate": "目标速率",
     "pickupPoint": "取货口",
-    "trueRawMaterial": "纯净原料"
+    "trueRawMaterial": "纯净原料",
+    "exportImage": "导出图片",
+    "exportFormat": "格式",
+    "exportScale": "缩放比例",
+    "exportConfirm": "导出"
   }
 }

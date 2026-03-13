@@ -1,11 +1,14 @@
 import { useMemo } from "react";
 import type { ProductionDependencyGraph, ItemId, FacilityId } from "@/types";
+import { getPickupPointCount } from "@/lib/utils";
 
 export type ProductionStats = {
   totalPowerConsumption: number;
   rawMaterialRequirements: Map<ItemId, number>;
   uniqueProductionSteps: number;
   facilityRequirements: Map<FacilityId, number>;
+  totalPickupPoints: number;
+  rawMaterialPickupPoints: Map<ItemId, number>;
 };
 
 /**
@@ -47,11 +50,21 @@ function collectStats(
     }
   });
 
+  const rawMaterialPickupPoints = new Map<ItemId, number>();
+  let totalPickupPoints = 0;
+  rawMaterials.forEach((rate, itemId) => {
+    const count = getPickupPointCount(rate);
+    rawMaterialPickupPoints.set(itemId, count);
+    totalPickupPoints += count;
+  });
+
   return {
     totalPowerConsumption: totalPower,
     rawMaterialRequirements: rawMaterials,
     uniqueProductionSteps,
     facilityRequirements,
+    totalPickupPoints,
+    rawMaterialPickupPoints,
   };
 }
 
@@ -69,6 +82,8 @@ export function useProductionStats(
         rawMaterialRequirements: new Map(),
         uniqueProductionSteps: 0,
         facilityRequirements: new Map(),
+        totalPickupPoints: 0,
+        rawMaterialPickupPoints: new Map(),
       };
     }
 

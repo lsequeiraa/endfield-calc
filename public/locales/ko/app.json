@@ -1,5 +1,6 @@
 {
   "ceilMode": "시설 수 올림",
+  "twoEndAlignment": "입출력 양끝 정렬",
   "calculationError": "생산 계획 계산 중 오류가 발생했습니다. 목표와 제조법 설정을 확인하세요.",
   "footer": {
     "feedback": "피드백 및 제안:",
@@ -9,7 +10,9 @@
   "header": {
     "community": "커뮤니티",
     "discord": "Discord 서버",
-    "qqGroup": "QQ 그룹"
+    "qqGroup": "QQ 그룹",
+    "save": "플랜 저장",
+    "open": "플랜 열기"
   },
   "tabs": {
     "merged": "제조법 보기",

@@ -49,6 +49,10 @@
     "targetDescription": "분당 {{item}} {{rate}}개 생산.",
     "targetRate": "목표 속도",
     "pickupPoint": "픽업 포인트",
-    "trueRawMaterial": "순수 원자재"
+    "trueRawMaterial": "순수 원자재",
+    "exportImage": "이미지 내보내기",
+    "exportFormat": "형식",
+    "exportScale": "배율",
+    "exportConfirm": "내보내기"
   }
 }

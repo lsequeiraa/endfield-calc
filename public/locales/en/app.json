@@ -1,5 +1,6 @@
 {
   "ceilMode": "Round up facilities",
+  "twoEndAlignment": "Align inputs/outputs",
   "calculationError": "An error occurred during production plan calculation. Please check your targets and recipe overrides.",
   "footer": {
     "feedback": "Feedback & Suggestions:",
@@ -9,7 +10,9 @@
   "header": {
     "community": "Community",
     "discord": "Discord Server",
-    "qqGroup": "QQ Group"
+    "qqGroup": "QQ Group",
+    "save": "Save Plan",
+    "open": "Open Plan"
   },
   "tabs": {
     "merged": "Recipe View",

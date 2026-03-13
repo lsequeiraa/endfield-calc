@@ -49,6 +49,10 @@
     "targetDescription": "Produce {{rate}} {{item}} per minute.",
     "targetRate": "Target rate",
     "pickupPoint": "Pickup Point",
-    "trueRawMaterial": "True raw material"
+    "trueRawMaterial": "True raw material",
+    "exportImage": "Export Image",
+    "exportFormat": "Format",
+    "exportScale": "Scale",
+    "exportConfirm": "Export"
   }
 }

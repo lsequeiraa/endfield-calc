@@ -20,6 +20,8 @@ type PortraitDrawerProps = {
   productionSteps: number;
   rawMaterialRequirements: Map<ItemId, number>;
   facilityRequirements: Map<string, number>;
+  totalPickupPoints: number;
+  rawMaterialPickupPoints: Map<ItemId, number>;
   error: string | null;
   onTargetChange: (index: number, rate: number) => void;
   onTargetRemove: (index: number) => void;
@@ -34,6 +36,8 @@ export default function PortraitDrawer({
   productionSteps,
   rawMaterialRequirements,
   facilityRequirements,
+  totalPickupPoints,
+  rawMaterialPickupPoints,
   error,
   onTargetChange,
   onTargetRemove,
@@ -104,6 +108,8 @@ export default function PortraitDrawer({
             productionSteps={productionSteps}
             rawMaterialRequirements={rawMaterialRequirements}
             facilityRequirements={facilityRequirements}
+            totalPickupPoints={totalPickupPoints}
+            rawMaterialPickupPoints={rawMaterialPickupPoints}
             facilities={facilities}
             items={items}
             error={error}

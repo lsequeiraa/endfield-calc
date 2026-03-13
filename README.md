@@ -2,7 +2,7 @@
 
 [中文](./README_zh.md)
 
-[![Live Demo](https://img.shields.io/badge/🚀_Live_Demo-Try_Now-success?style=for-the-badge)](https://jamboChen.github.io/endfield-calc)
+[![Live Demo](https://img.shields.io/badge/🚀_Live_Demo-Try_Now-success?style=for-the-badge)](https://JamboChen.github.io/endfield-calc)
 [![Discord](https://img.shields.io/badge/Discord-JOIN_US-5865F2?logo=discord&logoColor=white)](https://discord.gg/6V7CupPwb6)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -50,7 +50,7 @@ Both modes feature interactive flow diagrams, cycle visualization, and flow rate
 ## Getting Started
 
 ### Try Online
-Visit **[https://jamboChen.github.io/endfield-calc](https://jamboChen.github.io/endfield-calc)**
+Visit **[https://JamboChen.github.io/endfield-calc](https://JamboChen.github.io/endfield-calc)**
 
 ### Local Development
 ```bash

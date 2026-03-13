@@ -1,5 +1,6 @@
 {
   "ceilMode": "Redondear instalaciones",
+  "twoEndAlignment": "Alinear entradas/salidas",
   "calculationError": "Ocurrió un error durante el cálculo del plan de producción. Por favor, revisa tus objetivos y las configuraciones de recetas.",
   "footer": {
     "feedback": "Comentarios y sugerencias:",
@@ -9,7 +10,9 @@
   "header": {
     "community": "Comunidad",
     "discord": "Servidor de Discord",
-    "qqGroup": "Grupo de QQ"
+    "qqGroup": "Grupo de QQ",
+    "save": "Guardar plan",
+    "open": "Abrir plan"
   },
   "tabs": {
     "merged": "Vista de Receta",

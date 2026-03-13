@@ -1,5 +1,6 @@
 {
   "ceilMode": "施設数を切り上げ",
+  "twoEndAlignment": "両端整列",
   "calculationError": "生産計画の計算中にエラーが発生しました。目標とレシピの上書きを確認してください。",
   "footer": {
     "feedback": "フィードバック・ご提案:",
@@ -9,7 +10,9 @@
   "header": {
     "community": "コミュニティ",
     "discord": "Discord サーバー",
-    "qqGroup": "QQ グループ"
+    "qqGroup": "QQ グループ",
+    "save": "プランを保存",
+    "open": "プランを開く"
   },
   "tabs": {
     "merged": "レシピ表示",

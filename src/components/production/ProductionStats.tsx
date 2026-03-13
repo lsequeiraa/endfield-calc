@@ -16,6 +16,8 @@ type ProductionStatsProps = {
   productionSteps: number;
   rawMaterialRequirements: Map<ItemId, number>;
   facilityRequirements: Map<string, number>;
+  totalPickupPoints: number;
+  rawMaterialPickupPoints: Map<ItemId, number>;
   facilities: Facility[];
   items: Item[];
   error: string | null;
@@ -26,6 +28,8 @@ const ProductionStats = memo(function ProductionStats({
   productionSteps,
   rawMaterialRequirements,
   facilityRequirements,
+  totalPickupPoints,
+  rawMaterialPickupPoints,
   facilities,
   items,
   error,
@@ -81,7 +85,7 @@ const ProductionStats = memo(function ProductionStats({
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <div className="text-xs text-muted-foreground">
                   {t("totalPower")}
@@ -104,6 +108,14 @@ const ProductionStats = memo(function ProductionStats({
                 </div>
                 <div className="text-lg font-bold font-mono">
                   {rawMaterialRequirements.size}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-xs text-muted-foreground">
+                  {t("pickupPoints")}
+                </div>
+                <div className="text-lg font-bold font-mono">
+                  {totalPickupPoints}
                 </div>
               </div>
             </div>
@@ -154,7 +166,7 @@ const ProductionStats = memo(function ProductionStats({
                   <CollapsibleContent>
                     <div className="grid grid-cols-2 gap-2 pt-2">
                       {rawMaterialList.map(({ item, rate }) => (
-                        <div
+                      <div
                           key={item.id}
                           className="space-y-0.5 p-2 border border-border/50 bg-card"
                         >
@@ -175,6 +187,10 @@ const ProductionStats = memo(function ProductionStats({
                             <span className="text-xs font-normal text-muted-foreground ml-1">
                               /min
                             </span>
+                          </div>
+                          <div className="text-xs text-muted-foreground font-mono">
+                            ×{rawMaterialPickupPoints.get(item.id) ?? 0}
+                            <span className="ml-1">{t("pickupPoints")}</span>
                           </div>
                         </div>
                       ))}

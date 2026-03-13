@@ -48,6 +48,7 @@ export default function ProductionViewTabs({
   const { t } = useTranslation("app");
   const [visualizationMode, setVisualizationMode] =
     useState<VisualizationMode>("merged");
+  const [twoEndAlignment, setTwoEndAlignment] = useState(false);
 
   return (
     <div className="flex-1 min-w-0">
@@ -84,6 +85,22 @@ export default function ProductionViewTabs({
                 {t("ceilMode")}
               </Label>
             </div>
+
+            {activeTab === "tree" && (
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="two-end-alignment"
+                  checked={twoEndAlignment}
+                  onCheckedChange={setTwoEndAlignment}
+                />
+                <Label
+                  htmlFor="two-end-alignment"
+                  className="text-xs whitespace-nowrap cursor-pointer hidden sm:block"
+                >
+                  {t("twoEndAlignment")}
+                </Label>
+              </div>
+            )}
 
             {activeTab === "tree" && (
               <ToggleGroup
@@ -130,6 +147,7 @@ export default function ProductionViewTabs({
                 facilities={facilities}
                 visualizationMode={visualizationMode}
                 targetRates={targetRates}
+                twoEndAlignment={twoEndAlignment}
                 ceilMode={ceilMode}
               />
             </TabsContent>

@@ -49,6 +49,10 @@
     "targetDescription": "毎分 {{item}} を {{rate}} 生産します。",
     "targetRate": "目標レート",
     "pickupPoint": "取出口",
-    "trueRawMaterial": "真の原材料"
+    "trueRawMaterial": "真の原材料",
+    "exportImage": "画像をエクスポート",
+    "exportFormat": "形式",
+    "exportScale": "スケール",
+    "exportConfirm": "エクスポート"
   }
 }

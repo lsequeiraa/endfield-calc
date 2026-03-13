@@ -1,5 +1,6 @@
 {
   "ceilMode": "设施数向上取整",
+  "twoEndAlignment": "两端对齐",
   "calculationError": "计算生产计划时发生错误。请检查您的目标产出和配方覆盖设置。",
   "footer": {
     "feedback": "反馈与建议：",
@@ -9,7 +10,9 @@
   "header": {
     "community": "社区",
     "discord": "Discord 服务器",
-    "qqGroup": "QQ 群"
+    "qqGroup": "QQ 群",
+    "save": "保存方案",
+    "open": "打开方案"
   },
   "tabs": {
     "merged": "配方视图",

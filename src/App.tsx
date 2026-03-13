@@ -35,6 +35,8 @@ export default function App() {
     setActiveTab,
     ceilMode,
     setCeilMode,
+    handleSavePlan,
+    handleOpenPlan,
   } = useProductionPlan();
 
   const targetRates = useMemo(
@@ -52,7 +54,7 @@ export default function App() {
     <ThemeProvider defaultTheme="light" storageKey="vite-ui-theme">
       <TooltipProvider>
         <div className="h-screen flex flex-col p-4 pb-0 gap-4 overflow-x-hidden [@media(orientation:portrait)]:pb-4">
-          <AppHeader onLanguageChange={handleLanguageChange} />
+          <AppHeader onLanguageChange={handleLanguageChange} onSavePlan={handleSavePlan} onOpenPlan={handleOpenPlan} />
 
           <div className="flex-1 flex gap-4 min-h-0">
             <div className={isPortrait ? "hidden" : "contents"}>
@@ -64,6 +66,8 @@ export default function App() {
                 productionSteps={stats.uniqueProductionSteps}
                 rawMaterialRequirements={stats.rawMaterialRequirements}
                 facilityRequirements={stats.facilityRequirements}
+                totalPickupPoints={stats.totalPickupPoints}
+                rawMaterialPickupPoints={stats.rawMaterialPickupPoints}
                 error={error}
                 onTargetChange={handleTargetChange}
                 onTargetRemove={handleTargetRemove}
@@ -95,6 +99,8 @@ export default function App() {
               productionSteps={stats.uniqueProductionSteps}
               rawMaterialRequirements={stats.rawMaterialRequirements}
               facilityRequirements={stats.facilityRequirements}
+              totalPickupPoints={stats.totalPickupPoints}
+              rawMaterialPickupPoints={stats.rawMaterialPickupPoints}
               error={error}
               onTargetChange={handleTargetChange}
               onTargetRemove={handleTargetRemove}

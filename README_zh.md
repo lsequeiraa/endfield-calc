@@ -3,7 +3,7 @@
 
 [English](./README.md)
 
-[![在线体验](https://img.shields.io/badge/🚀_在线体验-立即使用-success?style=for-the-badge)](https://jamboChen.github.io/endfield-calc)
+[![在线体验](https://img.shields.io/badge/🚀_在线体验-立即使用-success?style=for-the-badge)](https://JamboChen.github.io/endfield-calc)
 [![Discord](https://img.shields.io/badge/Discord-加入社区-5865F2?logo=discord&logoColor=white)](https://discord.gg/6V7CupPwb6)
 [![许可证](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -50,7 +50,7 @@
 ## 快速开始
 
 ### 在线体验
-访问 [https://jamboChen.github.io/endfield-calc](https://jamboChen.github.io/endfield-calc)
+访问 [https://JamboChen.github.io/endfield-calc](https://JamboChen.github.io/endfield-calc)
 
 ### 本地开发
 ```bash

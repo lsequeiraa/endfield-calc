@@ -13,6 +13,8 @@ type LeftPanelProps = {
   productionSteps: number;
   rawMaterialRequirements: Map<ItemId, number>;
   facilityRequirements: Map<string, number>;
+  totalPickupPoints: number;
+  rawMaterialPickupPoints: Map<ItemId, number>;
   error: string | null;
   onTargetChange: (index: number, rate: number) => void;
   onTargetRemove: (index: number) => void;
@@ -27,6 +29,8 @@ const LeftPanel = memo(function LeftPanel({
   productionSteps,
   rawMaterialRequirements,
   facilityRequirements,
+  totalPickupPoints,
+  rawMaterialPickupPoints,
   error,
   onTargetChange,
   onTargetRemove,
@@ -60,6 +64,8 @@ const LeftPanel = memo(function LeftPanel({
         productionSteps={productionSteps}
         rawMaterialRequirements={rawMaterialRequirements}
         facilityRequirements={facilityRequirements}
+        totalPickupPoints={totalPickupPoints}
+        rawMaterialPickupPoints={rawMaterialPickupPoints}
         facilities={facilities}
         items={items}
         error={error}
