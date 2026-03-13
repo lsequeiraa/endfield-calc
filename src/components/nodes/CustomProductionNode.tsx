@@ -7,7 +7,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { RecipeIOFull, ItemIcon } from "../production/ProductionTable";
-import { getItemName, getFacilityName } from "@/lib/i18n-helpers";
+import { getItemName, getFacilityName, getTransportLabel } from "@/lib/i18n-helpers";
 import { useTranslation } from "react-i18next";
 import type {
   FlowNodeData,
@@ -15,7 +15,7 @@ import type {
   FlowNodeDataSeparatedWithTarget,
   FlowNodeDataWithTarget,
 } from "@/types";
-import { getBeltCount, getPickupPointCount } from "@/lib/utils";
+import { getTransportCount, getPickupPointCount, formatCount } from "@/lib/utils";
 
 /**
  * Type alias for a React Flow node containing production data.
@@ -114,7 +114,7 @@ export default function CustomProductionNode({
           <div className="mt-1 text-muted-foreground">
             {t("tree.pickupPoint")}: {isSeparated
               ? `${data.facilityIndex! + 1} / ${data.totalFacilities}`
-              : `×${getPickupPointCount(node.targetRate)}`}
+              : `×${getPickupPointCount(node.targetRate, node.item)}`}
           </div>
         </div>
       ) : node.recipe ? (
@@ -145,7 +145,7 @@ export default function CustomProductionNode({
                 // Merged mode: show total power
                 <div className="text-muted-foreground">
                   {t("tree.power")}: {facility.powerConsumption} ×{" "}
-                  {formatNumber(node.facilityCount, 1)} ={" "}
+                  {formatCount(node.facilityCount, ceilMode as boolean)} ={" "}
                   {formatNumber(
                     facility.powerConsumption * node.facilityCount,
                     1,
@@ -210,7 +210,7 @@ export default function CustomProductionNode({
                   {formatNumber(node.targetRate)} /min
                 </span>
                 <span className="text-[10px] text-muted-foreground tabular-nums">
-                  {formatNumber(getBeltCount(node.targetRate, ceilMode as boolean), ceilMode ? 0 : 1)} {t("belt.belts")}
+                  {formatCount(getTransportCount(node.targetRate, node.item, ceilMode as boolean), ceilMode as boolean)} {getTransportLabel(node.item)}
                 </span>
               </div>
             </div>
@@ -234,7 +234,7 @@ export default function CustomProductionNode({
                 <span className="font-mono font-semibold text-blue-700 dark:text-blue-300 text-xs">
                   {isSeparated
                     ? `${data.facilityIndex! + 1}/${data.totalFacilities}`
-                    : `×${formatNumber(node.facilityCount, 1)}`}
+                    : `×${formatCount(node.facilityCount, ceilMode as boolean)}`}
                 </span>
               </div>
             )}
@@ -250,7 +250,7 @@ export default function CustomProductionNode({
                 <span className="font-mono font-semibold text-green-700 dark:text-green-300 text-xs">
                   {isSeparated
                     ? `${data.facilityIndex! + 1}/${data.totalFacilities}`
-                    : `×${getPickupPointCount(node.targetRate)}`}
+                    : `×${getPickupPointCount(node.targetRate, node.item)}`}
                 </span>
               </div>
             )}
