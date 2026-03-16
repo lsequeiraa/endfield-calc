@@ -8,14 +8,17 @@ import type {
   FlowNodeData,
   FlowProductionNode,
   FlowTargetNode,
+  FlowDisposalNode,
 } from "@/types";
 import {
   createEdge,
   createProductionFlowNode,
   createTargetSinkNode,
+  createDisposalSinkNode,
 } from "../flow/flow-utils";
 import { createTargetSinkId, createRawMaterialId } from "@/lib/node-keys";
 import { calcRate } from "@/lib/utils";
+import { getRecipeOutputItemId, getRecipeInputItemId, getNonDisposalProducerRecipeId } from "@/lib/plan-helpers";
 
 /**
  * Maps a ProductionDependencyGraph to React Flow nodes and edges in merged mode.
@@ -26,7 +29,7 @@ export function mapPlanToFlowMerged(
   facilities: Facility[],
   targetRates?: Map<ItemId, number>,
   ceilMode = false,
-): { nodes: (FlowProductionNode | FlowTargetNode)[]; edges: Edge[] } {
+): { nodes: (FlowProductionNode | FlowTargetNode | FlowDisposalNode)[]; edges: Edge[] } {
   const flowNodes: Node<FlowNodeData>[] = [];
   const flowEdges: Edge[] = [];
   const targetSinkNodes: FlowTargetNode[] = [];
@@ -44,7 +47,7 @@ export function mapPlanToFlowMerged(
   // Create production nodes (recipe nodes only)
   plan.nodes.forEach((node, nodeId) => {
     if (node.type === "recipe") {
-      const outputItemId = plan.edges.find((e) => e.from === nodeId)?.to;
+      const outputItemId = getRecipeOutputItemId(plan, nodeId);
       const outputItemNode = outputItemId
         ? (plan.nodes.get(outputItemId) as
           | Extract<ProductionGraphNode, { type: "item" }>
@@ -58,7 +61,7 @@ export function mapPlanToFlowMerged(
 
       if (outputItemNode && !isTerminalTarget) {
         flowNodes.push(
-          createProductionFlowNode(
+           createProductionFlowNode(
             nodeId,
             {
               item: outputItemNode.item,
@@ -72,13 +75,13 @@ export function mapPlanToFlowMerged(
             },
             items,
             facilities,
+            ceilMode,
             {
               isDirectTarget: outputItemNode.isTarget,
               directTargetRate: outputItemNode.isTarget
                 ? (targetRates?.get(outputItemNode.itemId) ??
                     outputItemNode.productionRate)
                 : undefined,
-              ceilMode,
             },
           ),
         );
@@ -101,13 +104,16 @@ export function mapPlanToFlowMerged(
 
     // Item → Recipe (consume)
     if (sourceNode.type === "item" && targetNode.type === "recipe") {
+      // Skip disposal recipe edges — disposal sinks create their own edges
+      if (targetNode.isDisposal) return;
+
       // Find the recipe that produces this item
       const producerRecipeId = Array.from(plan.edges).find(
         (e) => e.to === edge.from && plan.nodes.get(e.from)?.type === "recipe",
       )?.from;
 
       // Determine where this flow should end
-      const outputItemId = plan.edges.find((e) => e.from === edge.to)?.to;
+      const outputItemId = getRecipeOutputItemId(plan, edge.to);
       const outputNode = outputItemId ? plan.nodes.get(outputItemId) : undefined;
       const isTerminalTargetRecipe =
         outputItemId &&
@@ -161,7 +167,8 @@ export function mapPlanToFlowMerged(
               },
               items,
               facilities,
-              { isDirectTarget: false, ceilMode },
+              ceilMode,
+              { isDirectTarget: false },
             ),
           );
         }
@@ -207,8 +214,17 @@ export function mapPlanToFlowMerged(
 
       const isTerminalTarget = !upstreamItemIds.has(nodeId);
 
+      // Check if the producer recipe already has a production flow node
+      // (e.g., the recipe also produces a primary non-byproduct output)
+      const producerHasFlowNode = producerRecipeId
+        ? flowNodes.some((n) => n.id === producerRecipeId)
+        : false;
+
       const userTargetRate =
         targetRates?.get(node.itemId) ?? node.productionRate;
+
+      // Only embed recipe info in the sink when no separate production node exists
+      const shouldEmbedRecipeInfo = producerRecipe && !producerHasFlowNode;
 
       targetSinkNodes.push(
         createTargetSinkNode(
@@ -217,7 +233,7 @@ export function mapPlanToFlowMerged(
           userTargetRate,
           items,
           facilities,
-          producerRecipe
+          shouldEmbedRecipeInfo
             ? {
               facility: producerRecipe.facility,
               facilityCount: producerRecipe.facilityCount,
@@ -228,8 +244,27 @@ export function mapPlanToFlowMerged(
         ),
       );
 
-      // Edge from producer recipe to target sink - only if NOT terminal
-      if (producerRecipeId && !isTerminalTarget) {
+      // Edge from producer recipe to target sink:
+      // - Always for non-terminal targets
+      // - Also for terminal targets when the recipe already has a production node
+      //   (byproduct scenario: recipe serves a primary output elsewhere)
+      if (producerRecipeId && (!isTerminalTarget || producerHasFlowNode)) {
+        // Compute how many facilities actually contribute to this edge flow,
+        // not the total recipe facility count
+        const producerNode = plan.nodes.get(producerRecipeId);
+        let edgeFacilityCount: number | undefined;
+        if (producerNode?.type === "recipe") {
+          const outputEntry = producerNode.recipe.outputs.find(
+            (o) => o.itemId === node.itemId,
+          );
+          if (outputEntry) {
+            const ratePerFacility = calcRate(
+              outputEntry.amount,
+              producerNode.recipe.craftingTime,
+            );
+            edgeFacilityCount = Math.ceil(userTargetRate / ratePerFacility);
+          }
+        }
         flowEdges.push(
           createEdge(
             `e${edgeIdCounter++}`,
@@ -239,16 +274,85 @@ export function mapPlanToFlowMerged(
             node.item,
             undefined,
             ceilMode,
+            edgeFacilityCount,
           ),
         );
       }
     }
   });
 
+  // Create disposal sink nodes for disposal recipes
+  const disposalSinkNodes: FlowDisposalNode[] = [];
+  plan.nodes.forEach((node, nodeId) => {
+    if (node.type !== "recipe" || !node.isDisposal) return;
+
+    const disposalSinkId = `disposal-${nodeId}`;
+
+    // Find the consumed item (edge: item -> disposal recipe)
+    const consumedItemId = getRecipeInputItemId(plan, nodeId);
+    if (!consumedItemId) return;
+
+    const consumedItemNode = plan.nodes.get(consumedItemId);
+    if (!consumedItemNode || consumedItemNode.type !== "item") return;
+
+    const disposalRate =
+      calcRate(
+        node.recipe.inputs[0].amount,
+        node.recipe.craftingTime,
+      ) * node.facilityCount;
+
+    disposalSinkNodes.push(
+      createDisposalSinkNode(
+        disposalSinkId,
+        consumedItemNode.item,
+        disposalRate,
+        node.facility,
+        node.facilityCount,
+        items,
+        facilities,
+        ceilMode,
+      ),
+    );
+
+    // Find the producer recipe of the consumed item to create an edge
+    const producerRecipeId = getNonDisposalProducerRecipeId(plan, consumedItemId);
+
+    if (producerRecipeId) {
+      // Compute how many facilities contribute to this disposal flow
+      const producerNode = plan.nodes.get(producerRecipeId);
+      let edgeFacilityCount: number | undefined;
+      if (producerNode?.type === "recipe") {
+        const outputEntry = producerNode.recipe.outputs.find(
+          (o) => o.itemId === consumedItemNode.itemId,
+        );
+        if (outputEntry) {
+          const ratePerFacility = calcRate(
+            outputEntry.amount,
+            producerNode.recipe.craftingTime,
+          );
+          edgeFacilityCount = Math.ceil(disposalRate / ratePerFacility);
+        }
+      }
+      flowEdges.push(
+        createEdge(
+          `e${edgeIdCounter++}`,
+          producerRecipeId,
+          disposalSinkId,
+          disposalRate,
+          consumedItemNode.item,
+          undefined,
+          ceilMode,
+          edgeFacilityCount,
+        ),
+      );
+    }
+  });
+
   return {
-    nodes: [...flowNodes, ...targetSinkNodes] as (
+    nodes: [...flowNodes, ...targetSinkNodes, ...disposalSinkNodes] as (
       | FlowProductionNode
       | FlowTargetNode
+      | FlowDisposalNode
     )[],
     edges: flowEdges,
   };

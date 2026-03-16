@@ -187,36 +187,25 @@ export function useProductionPlan() {
     return { plan, error };
   }, [targets, recipeOverrides, manualRawMaterials, t]);
 
-  // Derive ceiled plan when ceilMode is on
+  // Filter zero-rate nodes from the plan for display
   const displayPlan = useMemo(() => {
     if (!plan) return plan;
-    // Filter 0-rate nodes
+    // Filter 0-rate nodes, but never filter out target items
     const activeNodes = new Map<string, ProductionGraphNode>();
     for (const [key, node] of plan.nodes) {
       if (node.type === "recipe" && node.facilityCount === 0) continue;
-      if (node.type === "item" && node.productionRate === 0) continue;
+      if (node.type === "item" && node.productionRate === 0 && !plan.targets.has(node.itemId)) continue;
       activeNodes.set(key, node);
     }
     // Filter edges that connect to removed nodes
     const activeEdges = plan.edges.filter(
       (edge) => activeNodes.has(edge.from) && activeNodes.has(edge.to)
     );
-    // Apply ceil to the remaining nodes
-    if (ceilMode) {
-      for (const [key, node] of activeNodes) {
-        if (node.type === "recipe") {
-          activeNodes.set(key, {
-            ...node,
-            facilityCount: Math.ceil(node.facilityCount),
-          });
-        }
-      }
-    }
     return { ...plan, nodes: activeNodes, edges: activeEdges } as ProductionDependencyGraph;
-  }, [plan, ceilMode]);
+  }, [plan]);
 
   // View-specific data: computed in view layer hooks
-  const stats = useProductionStats(displayPlan, manualRawMaterials);
+  const stats = useProductionStats(displayPlan, manualRawMaterials, ceilMode, items);
   const tableData = useProductionTable(
     displayPlan,
     recipes,

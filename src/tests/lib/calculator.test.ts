@@ -13,6 +13,8 @@ import {
   multiRecipeItems,
   cycleRecipes,
   complexRecipes,
+  byproductRecipes,
+  byproductSCCRecipes,
 } from "./fixtures/test-data";
 
 const getNode = (
@@ -399,6 +401,257 @@ describe("Recipe Output Amounts", () => {
 
     const mossNode = getItemNode(plan, ItemId.ITEM_PLANT_MOSS_1);
     expect(mossNode.productionRate).toBeCloseTo(30, 5);
+  });
+});
+
+describe("Byproduct Recipes", () => {
+  test("handles recipes with byproduct outputs without crashing", () => {
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 }],
+      mockItems,
+      byproductRecipes,
+      mockFacilities,
+    );
+
+    expect(plan.nodes.has(ItemId.ITEM_COPPER_CMPT)).toBe(true);
+    expect(plan.nodes.has(ItemId.ITEM_COPPER_NUGGET)).toBe(true);
+    expect(plan.nodes.has(ItemId.ITEM_LIQUID_SEWAGE)).toBe(true);
+
+    const producer = getProducer(plan, ItemId.ITEM_COPPER_NUGGET);
+    expect(producer?.recipeId).toBe(RecipeId.FURNANCE_COPPER_NUGGET_1);
+  });
+
+  test("byproduct items are not treated as raw materials", () => {
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 }],
+      mockItems,
+      byproductRecipes,
+      mockFacilities,
+    );
+
+    const sewageNode = getItemNode(plan, ItemId.ITEM_LIQUID_SEWAGE);
+    expect(sewageNode.isRawMaterial).toBe(false);
+  });
+
+  test("byproduct target reuses existing recipe instead of selecting a new one", () => {
+    const plan = calculateProductionPlan(
+      [
+        { itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 },
+        { itemId: ItemId.ITEM_LIQUID_SEWAGE, rate: 30 },
+      ],
+      mockItems,
+      byproductRecipes,
+      mockFacilities,
+    );
+
+    // Both items should use the same furnace recipe
+    const nuggetProducer = getProducer(plan, ItemId.ITEM_COPPER_NUGGET);
+    const sewageProducer = getProducer(plan, ItemId.ITEM_LIQUID_SEWAGE);
+    expect(nuggetProducer?.recipeId).toBe(RecipeId.FURNANCE_COPPER_NUGGET_1);
+    expect(sewageProducer?.recipeId).toBe(RecipeId.FURNANCE_COPPER_NUGGET_1);
+
+    // Liquid Sewage should be a target
+    const sewageNode = getItemNode(plan, ItemId.ITEM_LIQUID_SEWAGE);
+    expect(sewageNode.isTarget).toBe(true);
+
+    // Production rates should be correct for both outputs
+    expect(sewageNode.productionRate).toBeCloseTo(30, 5);
+    const nuggetNode = getItemNode(plan, ItemId.ITEM_COPPER_NUGGET);
+    expect(nuggetNode.productionRate).toBeCloseTo(30, 5);
+  });
+
+  test("byproduct production rate scales with primary output demand", () => {
+    const plan = calculateProductionPlan(
+      [
+        { itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 },
+        { itemId: ItemId.ITEM_LIQUID_SEWAGE, rate: 60 },
+      ],
+      mockItems,
+      byproductRecipes,
+      mockFacilities,
+    );
+
+    // Sewage demands 60/min but furnace produces 30/min per facility
+    // So furnace must scale to 2 facilities to meet both demands
+    const sewageNode = getItemNode(plan, ItemId.ITEM_LIQUID_SEWAGE);
+    expect(sewageNode.productionRate).toBeCloseTo(60, 5);
+
+    // Copper nugget also gets 60/min (overproduction to meet sewage demand)
+    const nuggetNode = getItemNode(plan, ItemId.ITEM_COPPER_NUGGET);
+    expect(nuggetNode.productionRate).toBeCloseTo(60, 5);
+
+    // Component recipe still only needs 1 facility for 30/min
+    const cmptProducer = getProducer(plan, ItemId.ITEM_COPPER_CMPT);
+    if (cmptProducer?.node.type === "recipe") {
+      expect(cmptProducer.node.facilityCount).toBeCloseTo(1, 5);
+    }
+  });
+});
+
+describe("Byproduct with SCC Cycle", () => {
+  test("byproduct target survives when one producer is in a zero-output SCC", () => {
+    // Three targets: Copper Component + Proc Battery + Liquid Sewage
+    // Sewage is produced by the copper furnace (non-zero) AND by Pool B (in SCC, zero).
+    // The SCC (Pool A ↔ Pool B via Sewage/Intermediate) is a net consumer of Sewage.
+    const plan = calculateProductionPlan(
+      [
+        { itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 },
+        { itemId: ItemId.ITEM_PROC_BATTERY_1, rate: 30 },
+        { itemId: ItemId.ITEM_LIQUID_SEWAGE, rate: 30 },
+      ],
+      mockItems,
+      byproductSCCRecipes,
+      mockFacilities,
+    );
+
+    // Liquid Sewage must appear in the plan as a target
+    expect(plan.nodes.has(ItemId.ITEM_LIQUID_SEWAGE)).toBe(true);
+    const sewageNode = getItemNode(plan, ItemId.ITEM_LIQUID_SEWAGE);
+    expect(sewageNode.isTarget).toBe(true);
+
+    // Sewage should have non-zero production from the furnace
+    expect(sewageNode.productionRate).toBeGreaterThan(0);
+
+    // Copper Component and Battery should also be in the plan
+    expect(plan.nodes.has(ItemId.ITEM_COPPER_CMPT)).toBe(true);
+    expect(plan.nodes.has(ItemId.ITEM_PROC_BATTERY_1)).toBe(true);
+    expect(getItemNode(plan, ItemId.ITEM_COPPER_CMPT).isTarget).toBe(true);
+    expect(getItemNode(plan, ItemId.ITEM_PROC_BATTERY_1).isTarget).toBe(true);
+  });
+
+  test("byproduct produced by multiple recipes has summed rate", () => {
+    // When an item is produced by multiple recipes (furnace + SCC recipe),
+    // the production rate should sum contributions from all producers.
+    const plan = calculateProductionPlan(
+      [
+        { itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 },
+        { itemId: ItemId.ITEM_PROC_BATTERY_1, rate: 30 },
+      ],
+      mockItems,
+      byproductSCCRecipes,
+      mockFacilities,
+    );
+
+    // Sewage exists in the plan (as byproduct from furnace + SCC recipe)
+    expect(plan.nodes.has(ItemId.ITEM_LIQUID_SEWAGE)).toBe(true);
+    const sewageNode = getItemNode(plan, ItemId.ITEM_LIQUID_SEWAGE);
+
+    // Rate should be >= furnace contribution (at least 30/min from 1 furnace)
+    // The SCC may add additional production (or 0 if clamped)
+    expect(sewageNode.productionRate).toBeGreaterThanOrEqual(30);
+  });
+});
+
+describe("Disposal Recipes", () => {
+  test("injects disposal when byproduct has no consumers", () => {
+    // Target: Copper Component → produces Sewage as byproduct with no consumer
+    // Expected: Disposal recipe injected for the full 30/min surplus
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 }],
+      mockItems,
+      byproductRecipes,
+      mockFacilities,
+    );
+
+    // Disposal recipe should be in the plan
+    const disposalRecipeId =
+      RecipeId.FLUID_CONSUME_LIQUID_CLEANER_1_ITEM_LIQUID_SEWAGE;
+    expect(plan.nodes.has(disposalRecipeId)).toBe(true);
+
+    const disposalNode = plan.nodes.get(disposalRecipeId)!;
+    expect(disposalNode.type).toBe("recipe");
+    if (disposalNode.type === "recipe") {
+      expect(disposalNode.isDisposal).toBe(true);
+      expect(disposalNode.facilityCount).toBeCloseTo(1, 5); // 30/min surplus / 30/min per facility
+    }
+  });
+
+  test("does not inject disposal when byproduct is a target", () => {
+    // Target: Copper Component + Liquid Sewage (as target)
+    // Sewage target demand equals production → no surplus → no disposal
+    const plan = calculateProductionPlan(
+      [
+        { itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 },
+        { itemId: ItemId.ITEM_LIQUID_SEWAGE, rate: 30 },
+      ],
+      mockItems,
+      byproductRecipes,
+      mockFacilities,
+    );
+
+    const disposalRecipeId =
+      RecipeId.FLUID_CONSUME_LIQUID_CLEANER_1_ITEM_LIQUID_SEWAGE;
+    expect(plan.nodes.has(disposalRecipeId)).toBe(false);
+  });
+
+  test("injects disposal only for surplus when byproduct is partially targeted", () => {
+    // Target: Copper Component (rate 60 → 2 furnaces → 60/min sewage)
+    //       + Liquid Sewage target at 30/min
+    // Surplus = 60 - 30 = 30/min → 1 disposal facility
+    const plan = calculateProductionPlan(
+      [
+        { itemId: ItemId.ITEM_COPPER_CMPT, rate: 60 },
+        { itemId: ItemId.ITEM_LIQUID_SEWAGE, rate: 30 },
+      ],
+      mockItems,
+      byproductRecipes,
+      mockFacilities,
+    );
+
+    const disposalRecipeId =
+      RecipeId.FLUID_CONSUME_LIQUID_CLEANER_1_ITEM_LIQUID_SEWAGE;
+    expect(plan.nodes.has(disposalRecipeId)).toBe(true);
+
+    const disposalNode = plan.nodes.get(disposalRecipeId)!;
+    if (disposalNode.type === "recipe") {
+      expect(disposalNode.facilityCount).toBeCloseTo(1, 5); // 30/min surplus / 30/min per facility
+    }
+  });
+
+  test("disposal facility count scales with surplus", () => {
+    // Target: Copper Component at rate 90 → 3 furnaces → 90/min sewage
+    // No consumer or target for sewage → full disposal
+    // Expected: 3 disposal facilities (90/30 = 3)
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_COPPER_CMPT, rate: 90 }],
+      mockItems,
+      byproductRecipes,
+      mockFacilities,
+    );
+
+    const disposalRecipeId =
+      RecipeId.FLUID_CONSUME_LIQUID_CLEANER_1_ITEM_LIQUID_SEWAGE;
+    expect(plan.nodes.has(disposalRecipeId)).toBe(true);
+
+    const disposalNode = plan.nodes.get(disposalRecipeId)!;
+    if (disposalNode.type === "recipe") {
+      expect(disposalNode.facilityCount).toBeCloseTo(3, 5);
+    }
+  });
+
+  test("disposal has correct edges in production graph", () => {
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 }],
+      mockItems,
+      byproductRecipes,
+      mockFacilities,
+    );
+
+    const disposalRecipeId =
+      RecipeId.FLUID_CONSUME_LIQUID_CLEANER_1_ITEM_LIQUID_SEWAGE;
+
+    // Edge from sewage item to disposal recipe (consumption)
+    const consumptionEdge = plan.edges.find(
+      (e) =>
+        e.from === ItemId.ITEM_LIQUID_SEWAGE && e.to === disposalRecipeId,
+    );
+    expect(consumptionEdge).toBeDefined();
+
+    // No edge from disposal recipe to any item (it produces nothing)
+    const productionEdge = plan.edges.find(
+      (e) => e.from === disposalRecipeId,
+    );
+    expect(productionEdge).toBeUndefined();
   });
 });
 

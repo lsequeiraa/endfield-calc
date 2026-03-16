@@ -23,7 +23,7 @@ import { Switch } from "@/components/ui/switch";
 import type { Item, Recipe, Facility, ItemId, RecipeId } from "@/types";
 import { useTranslation } from "react-i18next";
 import { getTransportLabel, getTransportTooltip, getFacilityName, getItemName } from "@/lib/i18n-helpers";
-import { getTransportCount, getPickupPointCount, formatCount } from "@/lib/utils";
+import { getTransportCountWithFacilities, getPickupPointCount, formatCount, formatNumber } from "@/lib/utils";
 
 export type ProductionLineData = {
   item: Item;
@@ -35,6 +35,7 @@ export type ProductionLineData = {
   isRawMaterial?: boolean;
   isTarget?: boolean;
   isManualRawMaterial?: boolean;
+  isDisposal?: boolean;
   directDependencyItemIds?: Set<ItemId>;
 };
 
@@ -47,25 +48,27 @@ type ProductionTableProps = {
   ceilMode?: boolean;
 };
 
-const formatNumber = (num: number, decimals = 2): string => {
-  return num.toFixed(decimals).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-};
+const sizeClasses = {
+  sm: { icon: "h-4 w-4 object-contain inline-block", fallback: "inline-block w-4 h-4 bg-muted rounded text-[5px] text-center leading-4" },
+  md: { icon: "h-8 w-8 object-contain inline-block", fallback: "inline-block w-8 h-8 bg-muted rounded text-[7px] text-center leading-3" },
+} as const;
 
-const ItemIcon = memo(({ item }: { item: Item }) => {
+const ItemIcon = memo(({ item, size = "md" }: { item: Item; size?: "sm" | "md" }) => {
   const itemName = getItemName(item);
+  const classes = sizeClasses[size];
 
   if (item.iconUrl) {
     return (
       <img
         src={item.iconUrl}
         alt={itemName}
-        className="h-8 w-8 object-contain inline-block"
+        className={classes.icon}
       />
     );
   }
 
   return (
-    <span className="inline-block w-8 h-8 bg-muted rounded text-[7px] text-center leading-3">
+    <span className={classes.fallback}>
       ?
     </span>
   );
@@ -340,7 +343,7 @@ const ProductionTable = memo(function ProductionTable({
 
               return (
                 <TableRow
-                  key={line.item.id}
+                  key={line.isDisposal ? `disposal-${line.item.id}` : line.item.id}
                   className={[
                     rowClassName,
                     shouldDim && "opacity-30",
@@ -410,7 +413,7 @@ const ProductionTable = memo(function ProductionTable({
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <div className="flex flex-col items-end cursor-help">
-                          <span>{formatCount(getTransportCount(line.outputRate, line.item, ceilMode), ceilMode)}</span>
+                          <span>{formatCount(getTransportCountWithFacilities(line.outputRate, line.item, ceilMode, line.facilityCount), ceilMode)}</span>
                           <span className="text-[10px] text-muted-foreground">
                             {getTransportLabel(line.item)}
                           </span>
@@ -541,6 +544,7 @@ const ProductionTable = memo(function ProductionTable({
                   <TableCell className="p-2">
                     <div className="flex justify-center">
                       {!line.isTarget &&
+                        !line.isDisposal &&
                         !(line.isRawMaterial && !line.isManualRawMaterial) && (
                           <Tooltip>
                             <TooltipTrigger asChild>

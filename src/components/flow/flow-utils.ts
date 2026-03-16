@@ -5,9 +5,10 @@ import type {
   Facility,
   FlowProductionNode,
   FlowTargetNode,
+  FlowDisposalNode,
 } from "@/types";
 import { MarkerType, type Edge, type Node, Position } from "@xyflow/react";
-import { getTransportCount, formatCount } from "@/lib/utils";
+import { getTransportCount, getTransportCountWithFacilities, formatCount } from "@/lib/utils";
 import { getTransportLabel } from "@/lib/i18n-helpers";
 
 /**
@@ -42,15 +43,34 @@ export function createEdge(
   item?: Item,
   direction?: EdgeDirection,
   ceilMode = false,
+  sourceFacilityCount?: number,
 ): Edge {
-  const transportCount = getTransportCount(flowRate, item, ceilMode);
-  const transportStr = formatCount(transportCount, ceilMode);
+  const throughputCount = getTransportCount(flowRate, item, ceilMode);
+  const throughputStr = formatCount(throughputCount, ceilMode);
+  const transportLabel = getTransportLabel(item);
+
+  // Show merged notation (e.g., "2→1 pipes") when source facilities need
+  // more connections than the throughput requires
+  let transportStr: string;
+  if (sourceFacilityCount !== undefined) {
+    const facilityCount = getTransportCountWithFacilities(
+      flowRate, item, ceilMode, sourceFacilityCount,
+    );
+    if (facilityCount > throughputCount && ceilMode) {
+      transportStr = `${formatCount(facilityCount, ceilMode)}→${throughputStr} ${transportLabel}`;
+    } else {
+      transportStr = `${throughputStr} ${transportLabel}`;
+    }
+  } else {
+    transportStr = `${throughputStr} ${transportLabel}`;
+  }
+
   return {
     id,
     source,
     target,
     type: direction === "backward" ? "backwardEdge" : "simplebezier",
-    label: `${flowRate.toFixed(2)} /min\n${transportStr} ${getTransportLabel(item)}`,
+    label: `${flowRate.toFixed(2)} /min\n${transportStr}`,
     data: {
       flowRate,
       direction,
@@ -207,13 +227,13 @@ export function createProductionFlowNode(
   node: ProductionNode,
   items: Item[],
   facilities: Facility[],
+  ceilMode: boolean,
   options: {
     facilityIndex?: number;
     totalFacilities?: number;
     isPartialLoad?: boolean;
     isDirectTarget?: boolean;
     directTargetRate?: number;
-    ceilMode?: boolean;
   } = {},
 ): FlowProductionNode {
   return {
@@ -228,7 +248,7 @@ export function createProductionFlowNode(
       isPartialLoad: options.isPartialLoad,
       isDirectTarget: options.isDirectTarget,
       directTargetRate: options.directTargetRate,
-      ceilMode: options.ceilMode,
+      ceilMode,
     },
     position: { x: 0, y: 0 },
     sourcePosition: Position.Right,
@@ -269,6 +289,36 @@ export function createTargetSinkNode(
             recipe: productionInfo.recipe ?? null,
           }
         : undefined,
+    },
+    position: { x: 0, y: 0 },
+    targetPosition: Position.Left,
+  };
+}
+
+/**
+ * Creates a disposal sink flow node for consuming waste byproducts.
+ */
+export function createDisposalSinkNode(
+  nodeId: string,
+  item: Item,
+  disposalRate: number,
+  facility: Facility,
+  facilityCount: number,
+  items: Item[],
+  facilities: Facility[],
+  ceilMode = false,
+): FlowDisposalNode {
+  return {
+    id: nodeId,
+    type: "disposalSink",
+    data: {
+      item,
+      disposalRate,
+      facility,
+      facilityCount,
+      items,
+      facilities,
+      ceilMode,
     },
     position: { x: 0, y: 0 },
     targetPosition: Position.Left,
