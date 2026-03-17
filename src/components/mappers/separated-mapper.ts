@@ -301,7 +301,35 @@ export function mapPlanToFlowSeparated(
       }
     }
 
-    const allocations = poolManager.allocate(recipeId, poolDemandRate);
+    // For byproduct demands, first allocate from already-consumed capacity
+    // (facilities running for their primary output produce byproducts for free).
+    // Then fall through to regular allocate() for any remaining demand to
+    // activate new facility instances if needed.
+    let allocations: { sourceNodeId: string; allocatedAmount: number; fromFacilityIndex: number }[];
+
+    if (isByproductDemand) {
+      allocations = poolManager.allocateByproduct(
+        recipeId,
+        poolDemandRate,
+        conversionRatio,
+      );
+
+      // Check if byproduct allocation fully satisfied the demand
+      const satisfiedPrimary = allocations.reduce(
+        (sum, a) => sum + a.allocatedAmount,
+        0,
+      );
+      const remainingPrimary = poolDemandRate - satisfiedPrimary;
+
+      if (remainingPrimary > 0.001) {
+        // Some facilities haven't been activated yet — allocate normally
+        // to trigger their first-visit processing
+        const additional = poolManager.allocate(recipeId, remainingPrimary);
+        allocations = allocations.concat(additional);
+      }
+    } else {
+      allocations = poolManager.allocate(recipeId, poolDemandRate);
+    }
 
     allocations.forEach((allocation) => {
       // Convert allocated amount back to demanded item units for edge display
