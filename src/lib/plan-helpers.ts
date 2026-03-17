@@ -1,13 +1,128 @@
-import type { ProductionDependencyGraph } from "@/types";
+import type { ProductionDependencyGraph, ProductionGraphNode } from "@/types";
+import { calcRate } from "@/lib/utils";
 
 /**
- * Find the first output item of a recipe node in the production graph.
+ * Returns ALL output item IDs for a recipe node in the production graph.
+ */
+export function getRecipeOutputItemIds(
+  plan: ProductionDependencyGraph,
+  recipeId: string,
+): string[] {
+  return plan.edges
+    .filter(
+      (e) => e.from === recipeId && plan.nodes.get(e.to)?.type === "item",
+    )
+    .map((e) => e.to);
+}
+
+/**
+ * Returns the primary output item of a recipe node. For multi-output recipes,
+ * selects deterministically:
+ *   1. Target items (the recipe's main purpose from the user's perspective)
+ *   2. Items consumed by non-disposal recipes (active production chain items)
+ *   3. First output alphabetically (stable fallback)
  */
 export function getRecipeOutputItemId(
   plan: ProductionDependencyGraph,
   recipeId: string,
 ): string | undefined {
-  return plan.edges.find((e) => e.from === recipeId)?.to;
+  const outputIds = getRecipeOutputItemIds(plan, recipeId);
+  if (outputIds.length <= 1) return outputIds[0];
+
+  // Prefer target items
+  const targetOutput = outputIds.find((id) => {
+    const node = plan.nodes.get(id);
+    return node?.type === "item" && node.isTarget;
+  });
+  if (targetOutput) return targetOutput;
+
+  // Prefer items consumed by non-disposal recipes (real production chain items)
+  const consumedOutput = outputIds.find((id) =>
+    plan.edges.some((e) => {
+      if (e.from !== id) return false;
+      const consumer = plan.nodes.get(e.to);
+      return consumer?.type === "recipe" && !consumer.isDisposal;
+    }),
+  );
+  if (consumedOutput) return consumedOutput;
+
+  // Stable fallback: alphabetical
+  return outputIds.sort()[0];
+}
+
+/**
+ * Determines whether a recipe is a "terminal target" — meaning it can be
+ * folded into a TargetSinkNode instead of being shown as a standalone node.
+ *
+ * A recipe is terminal only if:
+ *   1. Its primary output is a target item with no non-disposal consumers
+ *   2. None of its OTHER outputs are consumed by non-disposal recipes
+ *
+ * This ensures multi-output recipes that participate in cycles (e.g.,
+ * pool_xiranite_poly_1 producing both xiranite_poly and liquid_sewage)
+ * are never folded away — they must remain as visible nodes because
+ * other recipes depend on their secondary outputs.
+ */
+export function isRecipeTerminal(
+  plan: ProductionDependencyGraph,
+  recipeId: string,
+): boolean {
+  const primaryOutputId = getRecipeOutputItemId(plan, recipeId);
+  if (!primaryOutputId) return false;
+
+  const primaryNode = plan.nodes.get(primaryOutputId);
+  if (!primaryNode || primaryNode.type !== "item" || !primaryNode.isTarget)
+    return false;
+
+  // Primary output must not be consumed by any non-disposal recipe
+  const primaryIsConsumed = plan.edges.some((e) => {
+    if (e.from !== primaryOutputId) return false;
+    const consumer = plan.nodes.get(e.to);
+    return consumer?.type === "recipe" && !consumer.isDisposal;
+  });
+  if (primaryIsConsumed) return false;
+
+  // No secondary output should be consumed by a non-disposal recipe
+  const allOutputIds = getRecipeOutputItemIds(plan, recipeId);
+  const hasActiveSecondaryOutput = allOutputIds.some((outId) => {
+    if (outId === primaryOutputId) return false;
+    return plan.edges.some((e) => {
+      if (e.from !== outId) return false;
+      const consumer = plan.nodes.get(e.to);
+      return consumer?.type === "recipe" && !consumer.isDisposal;
+    });
+  });
+
+  return !hasActiveSecondaryOutput;
+}
+
+/**
+ * Returns all non-disposal recipes that produce an item, with their
+ * individual production rates. Used to split flow across multiple producers
+ * (e.g., liquid_sewage produced by both pool_xiranite_poly_1 and furnace).
+ */
+export function getItemProducers(
+  plan: ProductionDependencyGraph,
+  itemId: string,
+): { recipeId: string; rate: number }[] {
+  return plan.edges
+    .filter((e) => {
+      if (e.to !== itemId) return false;
+      const n = plan.nodes.get(e.from);
+      return n?.type === "recipe" && !n.isDisposal;
+    })
+    .map((e) => {
+      const node = plan.nodes.get(e.from) as Extract<
+        ProductionGraphNode,
+        { type: "recipe" }
+      >;
+      const out = node.recipe.outputs.find((o) => o.itemId === itemId);
+      const rate = out
+        ? calcRate(out.amount, node.recipe.craftingTime) * node.facilityCount
+        : 0;
+      return { recipeId: e.from, rate };
+    })
+    .filter((p) => p.rate > 0);
 }
 
 /**
@@ -20,16 +135,3 @@ export function getRecipeInputItemId(
   return plan.edges.find((e) => e.to === recipeId)?.from;
 }
 
-/**
- * Find the non-disposal producer recipe for an item.
- */
-export function getNonDisposalProducerRecipeId(
-  plan: ProductionDependencyGraph,
-  itemId: string,
-): string | undefined {
-  return plan.edges.find((e) => {
-    if (e.to !== itemId) return false;
-    const n = plan.nodes.get(e.from);
-    return n?.type === "recipe" && !n.isDisposal;
-  })?.from;
-}
