@@ -989,6 +989,43 @@ function tryExtendSCCWithFeeders(
 
   if (feedersAdded.length === 0) return false;
 
+  // --- Snapshot state before mutations so we can roll back on failure ---
+  const originalSCCRecipes = new Set(scc.recipes);
+  const originalExternalInputs = new Set(scc.externalInputs);
+  const addedRecipeIds: RecipeId[] = [];
+  const addedItemIds: ItemId[] = [];
+  const addedConsumptionEdges: { itemId: ItemId; recipeId: RecipeId }[] = [];
+
+  /**
+   * Undo all graph and SCC mutations made by this function. Called before
+   * returning false so that a failed extension leaves no orphan nodes or
+   * stale SCC entries (which would leak into involvedRecipeIds in the
+   * invalid-cycle warning, etc.).
+   */
+  const rollback = () => {
+    // Restore SCC sets
+    for (const id of scc.recipes) {
+      if (!originalSCCRecipes.has(id)) scc.recipes.delete(id);
+    }
+    for (const id of scc.externalInputs) {
+      if (!originalExternalInputs.has(id)) scc.externalInputs.delete(id);
+    }
+    // Remove newly added graph entries
+    for (const id of addedRecipeIds) {
+      graph.recipeNodes.delete(id);
+      graph.recipeInputs.delete(id);
+      graph.recipeOutputs.delete(id);
+      recipeFacilityCounts.delete(id);
+    }
+    for (const id of addedItemIds) {
+      graph.itemNodes.delete(id);
+      graph.rawMaterials.delete(id);
+    }
+    for (const { itemId, recipeId } of addedConsumptionEdges) {
+      graph.itemConsumedBy.get(itemId)?.delete(recipeId);
+    }
+  };
+
   // --- Add feeder recipes to the bipartite graph and extend the SCC ---
   for (const { feederRecipe } of feedersAdded) {
     const facility = maps.facilityMap.get(feederRecipe.facilityId);
@@ -1003,6 +1040,7 @@ function tryExtendSCCWithFeeders(
       });
       graph.recipeInputs.set(feederRecipe.id, new Set());
       graph.recipeOutputs.set(feederRecipe.id, new Set());
+      addedRecipeIds.push(feederRecipe.id);
     }
 
     // Add output edges
@@ -1016,6 +1054,7 @@ function tryExtendSCCWithFeeders(
             item: outItem,
             isRawMaterial: false,
           });
+          addedItemIds.push(out.itemId);
         }
       }
     }
@@ -1027,6 +1066,10 @@ function tryExtendSCCWithFeeders(
         graph.itemConsumedBy.set(inp.itemId, new Set());
       }
       graph.itemConsumedBy.get(inp.itemId)!.add(feederRecipe.id);
+      addedConsumptionEdges.push({
+        itemId: inp.itemId,
+        recipeId: feederRecipe.id,
+      });
 
       // Ensure input item exists in the graph
       if (!graph.itemNodes.has(inp.itemId)) {
@@ -1040,6 +1083,7 @@ function tryExtendSCCWithFeeders(
             isRawMaterial: isRaw,
           });
           if (isRaw) graph.rawMaterials.add(inp.itemId);
+          addedItemIds.push(inp.itemId);
         }
       }
 
@@ -1114,7 +1158,10 @@ function tryExtendSCCWithFeeders(
     }
   }
 
-  if (pinnedRecipes.size === 0) return false;
+  if (pinnedRecipes.size === 0) {
+    rollback();
+    return false;
+  }
 
   // Build reduced system (same approach as Path A in solveSCCFlow)
   const freeIndices = Array.from({ length: m }, (_, i) => i).filter(
@@ -1186,6 +1233,7 @@ function tryExtendSCCWithFeeders(
     console.warn(
       `  [SCC_EXTEND] Extended system still has no solution for SCC ${scc.id}`,
     );
+    rollback();
     return false;
   }
 
@@ -1265,6 +1313,7 @@ function tryExtendSCCWithFeeders(
       console.warn(
         `  [SCC_EXTEND] Target ${itemId} has unresolved deficit of ${(externalDemand - targetNetProduction).toFixed(4)}/min — extension failed`,
       );
+      rollback();
       return false;
     }
   }
