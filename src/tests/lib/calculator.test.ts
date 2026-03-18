@@ -11,6 +11,7 @@ import {
   mockFacilities,
   simpleRecipes,
   multiRecipeItems,
+  overrideCycleRecipes,
   cycleRecipes,
   complexRecipes,
   byproductRecipes,
@@ -175,6 +176,136 @@ describe("Multiple Recipe Selection", () => {
 
     const inputs = getRecipeInputs(plan, RecipeId.FURNANCE_IRON_NUGGET_2);
     expect(inputs).toContain(ItemId.ITEM_IRON_POWDER);
+  });
+});
+
+describe("Override Cycle Resolution (Issue #51)", () => {
+  // When the user overrides Iron Nugget to use FURNANCE_IRON_NUGGET_2
+  // (Iron Powder → Iron Nugget), and Iron Powder's only recipe is
+  // GRINDER_IRON_POWDER_1 (Iron Nugget → Iron Powder), this creates
+  // a 1:1 balanced cycle with zero net output.
+  //
+  // The fix extends the SCC with the default recipe (FURNANCE_IRON_NUGGET_1)
+  // as a feeder, producing the chain:
+  // Iron Ore → FURNANCE_1 → Iron Nugget → GRINDER → Iron Powder → FURNANCE_2 → Iron Nugget
+
+  test("resolves override cycle by adding feeder recipe", () => {
+    const overrides = new Map([
+      [ItemId.ITEM_IRON_NUGGET, RecipeId.FURNANCE_IRON_NUGGET_2],
+    ]);
+
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_IRON_NUGGET, rate: 30 }],
+      mockItems,
+      overrideCycleRecipes,
+      mockFacilities,
+      overrides,
+    );
+
+    // The plan should be valid — no invalid cycles
+    expect(plan.invalidCycles).toHaveLength(0);
+
+    // All three recipes should be in the plan with non-zero facility counts
+    const furnace1 = plan.nodes.get(RecipeId.FURNANCE_IRON_NUGGET_1);
+    const furnace2 = plan.nodes.get(RecipeId.FURNANCE_IRON_NUGGET_2);
+    const grinder = plan.nodes.get(RecipeId.GRINDER_IRON_POWDER_1);
+
+    expect(furnace1).toBeDefined();
+    expect(furnace2).toBeDefined();
+    expect(grinder).toBeDefined();
+
+    if (furnace1?.type === "recipe") {
+      expect(furnace1.facilityCount).toBeGreaterThan(0);
+    }
+    if (furnace2?.type === "recipe") {
+      expect(furnace2.facilityCount).toBeGreaterThan(0);
+    }
+    if (grinder?.type === "recipe") {
+      expect(grinder.facilityCount).toBeGreaterThan(0);
+    }
+
+    // Iron Ore should be consumed as a raw material
+    const ironOre = getItemNode(plan, ItemId.ITEM_IRON_ORE);
+    expect(ironOre.isRawMaterial).toBe(true);
+
+    // Iron Nugget should be the target
+    const ironNugget = getItemNode(plan, ItemId.ITEM_IRON_NUGGET);
+    expect(ironNugget.isTarget).toBe(true);
+    expect(ironNugget.productionRate).toBeGreaterThan(0);
+  });
+
+  test("feeder chain produces correct facility counts", () => {
+    const overrides = new Map([
+      [ItemId.ITEM_IRON_NUGGET, RecipeId.FURNANCE_IRON_NUGGET_2],
+    ]);
+
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_IRON_NUGGET, rate: 30 }],
+      mockItems,
+      overrideCycleRecipes,
+      mockFacilities,
+      overrides,
+    );
+
+    // All three recipes should run at 1 facility each (rate = 30/min per facility)
+    const furnace1 = plan.nodes.get(RecipeId.FURNANCE_IRON_NUGGET_1);
+    const furnace2 = plan.nodes.get(RecipeId.FURNANCE_IRON_NUGGET_2);
+    const grinder = plan.nodes.get(RecipeId.GRINDER_IRON_POWDER_1);
+
+    if (
+      furnace1?.type === "recipe" &&
+      furnace2?.type === "recipe" &&
+      grinder?.type === "recipe"
+    ) {
+      expect(furnace1.facilityCount).toBeCloseTo(1, 2);
+      expect(furnace2.facilityCount).toBeCloseTo(1, 2);
+      expect(grinder.facilityCount).toBeCloseTo(1, 2);
+    }
+  });
+
+  test("Iron Powder target with stale Iron Nugget override", () => {
+    // User previously overrode Iron Nugget → FURNANCE_2, then changed
+    // target to Iron Powder. The stale override creates the same cycle.
+    const overrides = new Map([
+      [ItemId.ITEM_IRON_NUGGET, RecipeId.FURNANCE_IRON_NUGGET_2],
+    ]);
+
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_IRON_POWDER, rate: 30 }],
+      mockItems,
+      overrideCycleRecipes,
+      mockFacilities,
+      overrides,
+    );
+
+    // Iron Powder should be in the plan (not silently dropped)
+    expect(plan.nodes.has(ItemId.ITEM_IRON_POWDER)).toBe(true);
+    const ironPowder = getItemNode(plan, ItemId.ITEM_IRON_POWDER);
+    expect(ironPowder.productionRate).toBeGreaterThan(0);
+  });
+
+  test("existing working cycles are unaffected by feeder extension", () => {
+    // The bottle filling/dismantling cycle with overrides — the existing
+    // behaviour should not regress (detected cycles, node presence, etc.)
+    const overrides = new Map([
+      [
+        ItemId.ITEM_FBOTTLE_GLASS_GRASS_1,
+        RecipeId.FILLING_BOTTLED_GLASS_GRASS_1,
+      ],
+      [ItemId.ITEM_LIQUID_PLANT_GRASS_1, RecipeId.DISMANTLER_GLASS_GRASS_1_1],
+    ]);
+
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_FBOTTLE_GLASS_GRASS_1, rate: 30 }],
+      mockItems,
+      cycleRecipes,
+      mockFacilities,
+      overrides,
+    );
+
+    // Existing cycle test assertions should still hold
+    expect(plan.detectedCycles.length).toBeGreaterThan(0);
+    expect(plan.nodes.has(ItemId.ITEM_FBOTTLE_GLASS_GRASS_1)).toBe(true);
   });
 });
 

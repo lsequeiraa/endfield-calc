@@ -11,6 +11,8 @@ import type {
 import { useTranslation } from "react-i18next";
 import { useProductionStats } from "./useProductionStats";
 import { useProductionTable } from "./useProductionTable";
+import { getItemName, getFacilityName } from "@/lib/i18n-helpers";
+import { getItemById } from "@/lib/utils";
 
 interface SavedPlan {
   version: string;
@@ -190,11 +192,21 @@ export function useProductionPlan() {
   // Filter zero-rate nodes from the plan for display
   const displayPlan = useMemo(() => {
     if (!plan) return plan;
-    // Filter 0-rate nodes, but never filter out target items
+
+    // Build sets of items/recipes involved in invalid cycles — these must
+    // not be filtered out so the user can see what went wrong.
+    const invalidCycleItems = new Set<ItemId>();
+    const invalidCycleRecipes = new Set<RecipeId>();
+    for (const ic of plan.invalidCycles) {
+      ic.involvedItemIds.forEach((id) => invalidCycleItems.add(id as ItemId));
+      ic.involvedRecipeIds.forEach((id) => invalidCycleRecipes.add(id as RecipeId));
+    }
+
+    // Filter 0-rate nodes, but never filter out target items or invalid-cycle nodes
     const activeNodes = new Map<string, ProductionGraphNode>();
     for (const [key, node] of plan.nodes) {
-      if (node.type === "recipe" && node.facilityCount === 0) continue;
-      if (node.type === "item" && node.productionRate === 0 && !plan.targets.has(node.itemId)) continue;
+      if (node.type === "recipe" && node.facilityCount === 0 && !invalidCycleRecipes.has(node.recipeId)) continue;
+      if (node.type === "item" && node.productionRate === 0 && !plan.targets.has(node.itemId) && !invalidCycleItems.has(node.itemId)) continue;
       activeNodes.set(key, node);
     }
     // Filter edges that connect to removed nodes
@@ -204,6 +216,66 @@ export function useProductionPlan() {
     return { ...plan, nodes: activeNodes, edges: activeEdges } as ProductionDependencyGraph;
   }, [plan]);
 
+  // Derive warning messages from invalid cycles (with translated item names).
+  // Only cycles caused by user recipe overrides generate warnings — pre-existing
+  // unsolvable cycles in the game data are not actionable and are skipped.
+  const warnings: string[] = useMemo(() => {
+    if (!plan || plan.invalidCycles.length === 0) return [];
+    return plan.invalidCycles
+      .filter((ic) => ic.overriddenItemIds.length > 0)
+      .map((ic) => {
+        const overriddenSet = new Set(ic.overriddenItemIds);
+
+        // Build "Item (Facility)" labels for overridden items
+        const overriddenLabels = ic.overriddenItemIds
+          .map((id) => {
+            const item = getItemById(items, id as ItemId);
+            const itemLabel = item ? getItemName(item) : id;
+            const recipeId = recipeOverrides.get(id as ItemId);
+            if (recipeId) {
+              const recipe = recipes.find((r) => r.id === recipeId);
+              if (recipe) {
+                const facility = facilities.find(
+                  (f) => f.id === recipe.facilityId,
+                );
+                if (facility) {
+                  return `${itemLabel} (${getFacilityName(facility)})`;
+                }
+              }
+            }
+            return itemLabel;
+          })
+          .join(", ");
+
+        // List the other affected items (excluding the overridden ones)
+        const affectedLabels = ic.involvedItemIds
+          .filter((id) => !overriddenSet.has(id))
+          .map((id) => {
+            const item = getItemById(items, id as ItemId);
+            return item ? getItemName(item) : id;
+          })
+          .join(", ");
+
+        return t("cycleWarning", {
+          overriddenItems: overriddenLabels,
+          affectedItems: affectedLabels,
+        });
+      });
+  }, [plan, recipeOverrides, t]);
+
+  // Collect overridden item IDs from invalid cycles for table row styling.
+  // Only the items whose recipe override caused the cycle get highlighted,
+  // not every item caught in the cycle.
+  const invalidCycleItemIds = useMemo(() => {
+    const ids = new Set<ItemId>();
+    if (plan) {
+      for (const ic of plan.invalidCycles) {
+        ic.overriddenItemIds.forEach((id) => ids.add(id as ItemId));
+      }
+    }
+    return ids;
+  }, [plan]);
+
   // View-specific data: computed in view layer hooks
   const stats = useProductionStats(displayPlan, manualRawMaterials, ceilMode, items);
   const tableData = useProductionTable(
@@ -211,6 +283,7 @@ export function useProductionPlan() {
     recipes,
     recipeOverrides,
     manualRawMaterials,
+    invalidCycleItemIds,
   );
 
   const handleTargetChange = useCallback((index: number, rate: number) => {
@@ -336,6 +409,7 @@ export function useProductionPlan() {
     tableData,
     stats,
     error,
+    warnings,
     ceilMode,
     setCeilMode,
     handleTargetChange,
