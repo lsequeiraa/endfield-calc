@@ -47,6 +47,8 @@ export const mockItems: Item[] = [
   { id: ItemId.ITEM_LIQUID_XIRANITE_POLY, tier: 2 },
   { id: ItemId.ITEM_LIQUID_XIRANITE_LOWPOLY, tier: 2 },
   { id: ItemId.ITEM_XIRANITE_POLY, tier: 3 },
+  { id: ItemId.ITEM_XIRANITE_POWDER, tier: 2 },
+  { id: ItemId.ITEM_CARBON_ENR, tier: 3 },
 
   // Liquids
   { id: ItemId.ITEM_LIQUID_PLANT_GRASS_1, tier: 2 },
@@ -72,6 +74,7 @@ export const mockFacilities: Facility[] = [
   { id: FacilityId.ITEM_PORT_SHAPER_1, powerConsumption: 10, tier: 1 },
   { id: FacilityId.ITEM_PORT_TOOLS_ASM_MC_1, powerConsumption: 15, tier: 1 },
   { id: FacilityId.ITEM_PORT_LIQUID_CLEANER_1, powerConsumption: 50, tier: 3 },
+  { id: FacilityId.ITEM_PORT_XIRANITE_OVEN_1, powerConsumption: 50, tier: 4 },
 ];
 
 // Simple linear recipes (no cycles)
@@ -272,19 +275,19 @@ export const byproductSCCRecipes: Recipe[] = [
     facilityId: FacilityId.ITEM_PORT_CMPT_MC_1,
     craftingTime: 2,
   },
-  // Sewage + Liquid Xiranite -> Liquid Xiranite Poly + Liquid Xiranite Lowpoly
+  // Liquid Xiranite + Sewage -> Liquid Xiranite Poly + Liquid Xiranite Lowpoly
   // (Pool A: consumes sewage, produces intermediate)
   {
     id: RecipeId.POOL_LIQUID_XIRANITE_POLY_1,
     inputs: [
-      { itemId: ItemId.ITEM_LIQUID_XIRANITE_POLY, amount: 1 },
+      { itemId: ItemId.ITEM_LIQUID_XIRANITE, amount: 1 },
       { itemId: ItemId.ITEM_LIQUID_SEWAGE, amount: 1 },
     ],
     outputs: [
       { itemId: ItemId.ITEM_LIQUID_XIRANITE_POLY, amount: 1 },
       { itemId: ItemId.ITEM_LIQUID_XIRANITE_LOWPOLY, amount: 1 },
     ],
-    facilityId: FacilityId.ITEM_PORT_FURNANCE_1,
+    facilityId: FacilityId.ITEM_PORT_MIX_POOL_1,
     craftingTime: 2,
   },
   // Liquid Xiranite Poly × 2 + Iron Powder -> Xiranite Poly + Sewage
@@ -299,7 +302,7 @@ export const byproductSCCRecipes: Recipe[] = [
       { itemId: ItemId.ITEM_XIRANITE_POLY, amount: 1 },
       { itemId: ItemId.ITEM_LIQUID_SEWAGE, amount: 1 },
     ],
-    facilityId: FacilityId.ITEM_PORT_FURNANCE_1,
+    facilityId: FacilityId.ITEM_PORT_MIX_POOL_1,
     craftingTime: 2,
   },
   // Xiranite Poly -> Proc Battery (FinalProduct, target 2)
@@ -371,6 +374,108 @@ export const complexRecipes: Recipe[] = [
     inputs: [{ itemId: ItemId.ITEM_IRON_ORE, amount: 1 }],
     outputs: [{ itemId: ItemId.ITEM_IRON_NUGGET, amount: 1 }],
     facilityId: FacilityId.ITEM_PORT_FURNANCE_1,
+    craftingTime: 2,
+  },
+];
+
+// Xircon (Xiranite Poly) production chain — uses REAL game recipe data.
+// The cycle pool_xiranite_poly_1 ↔ pool_liquid_xiranite_poly_1 has a net
+// liquid_sewage deficit that must be filled by furnance_copper_nugget_1.
+export const xirconRecipes: Recipe[] = [
+  // Core cycle recipe: liquid_xiranite_poly ×2 + iron_powder → xiranite_poly + liquid_sewage
+  {
+    id: RecipeId.POOL_XIRANITE_POLY_1,
+    inputs: [
+      { itemId: ItemId.ITEM_LIQUID_XIRANITE_POLY, amount: 2 },
+      { itemId: ItemId.ITEM_IRON_POWDER, amount: 1 },
+    ],
+    outputs: [
+      { itemId: ItemId.ITEM_XIRANITE_POLY, amount: 1 },
+      { itemId: ItemId.ITEM_LIQUID_SEWAGE, amount: 1 },
+    ],
+    facilityId: FacilityId.ITEM_PORT_MIX_POOL_1,
+    craftingTime: 2,
+  },
+  // Core cycle recipe: liquid_xiranite + liquid_sewage → liquid_xiranite_poly + liquid_xiranite_lowpoly
+  {
+    id: RecipeId.POOL_LIQUID_XIRANITE_POLY_1,
+    inputs: [
+      { itemId: ItemId.ITEM_LIQUID_XIRANITE, amount: 1 },
+      { itemId: ItemId.ITEM_LIQUID_SEWAGE, amount: 1 },
+    ],
+    outputs: [
+      { itemId: ItemId.ITEM_LIQUID_XIRANITE_POLY, amount: 1 },
+      { itemId: ItemId.ITEM_LIQUID_XIRANITE_LOWPOLY, amount: 1 },
+    ],
+    facilityId: FacilityId.ITEM_PORT_MIX_POOL_1,
+    craftingTime: 2,
+  },
+  // xiranite_powder + liquid_water → liquid_xiranite
+  {
+    id: RecipeId.POOL_LIQUID_LIQUID_XIRANITE_1,
+    inputs: [
+      { itemId: ItemId.ITEM_XIRANITE_POWDER, amount: 1 },
+      { itemId: ItemId.ITEM_LIQUID_WATER, amount: 1 },
+    ],
+    outputs: [{ itemId: ItemId.ITEM_LIQUID_XIRANITE, amount: 1 }],
+    facilityId: FacilityId.ITEM_PORT_MIX_POOL_1,
+    craftingTime: 2,
+  },
+  // carbon_enr ×2 + liquid_water → xiranite_powder
+  {
+    id: RecipeId.XIRANITE_OVEN_XIRANITE_POWDER_1,
+    inputs: [
+      { itemId: ItemId.ITEM_CARBON_ENR, amount: 2 },
+      { itemId: ItemId.ITEM_LIQUID_WATER, amount: 1 },
+    ],
+    outputs: [{ itemId: ItemId.ITEM_XIRANITE_POWDER, amount: 1 }],
+    facilityId: FacilityId.ITEM_PORT_XIRANITE_OVEN_1,
+    craftingTime: 2,
+  },
+  // External sewage source: copper_ore + liquid_water → copper_nugget + liquid_sewage
+  {
+    id: RecipeId.FURNANCE_COPPER_NUGGET_1,
+    inputs: [
+      { itemId: ItemId.ITEM_COPPER_ORE, amount: 1 },
+      { itemId: ItemId.ITEM_LIQUID_WATER, amount: 1 },
+    ],
+    outputs: [
+      { itemId: ItemId.ITEM_COPPER_NUGGET, amount: 1 },
+      { itemId: ItemId.ITEM_LIQUID_SEWAGE, amount: 1 },
+    ],
+    facilityId: FacilityId.ITEM_PORT_FURNANCE_1,
+    craftingTime: 2,
+  },
+  // iron_nugget → iron_powder
+  {
+    id: RecipeId.GRINDER_IRON_POWDER_1,
+    inputs: [{ itemId: ItemId.ITEM_IRON_NUGGET, amount: 1 }],
+    outputs: [{ itemId: ItemId.ITEM_IRON_POWDER, amount: 1 }],
+    facilityId: FacilityId.ITEM_PORT_GRINDER_1,
+    craftingTime: 2,
+  },
+  // iron_ore → iron_nugget
+  {
+    id: RecipeId.FURNANCE_IRON_NUGGET_1,
+    inputs: [{ itemId: ItemId.ITEM_IRON_ORE, amount: 1 }],
+    outputs: [{ itemId: ItemId.ITEM_IRON_NUGGET, amount: 1 }],
+    facilityId: FacilityId.ITEM_PORT_FURNANCE_1,
+    craftingTime: 2,
+  },
+  // Disposal: liquid_xiranite_lowpoly
+  {
+    id: RecipeId.FLUID_CONSUME_LIQUID_CLEANER_1_ITEM_LIQUID_XIRANITE_LOWPOLY,
+    inputs: [{ itemId: ItemId.ITEM_LIQUID_XIRANITE_LOWPOLY, amount: 1 }],
+    outputs: [],
+    facilityId: FacilityId.ITEM_PORT_LIQUID_CLEANER_1,
+    craftingTime: 2,
+  },
+  // Disposal: liquid_sewage
+  {
+    id: RecipeId.FLUID_CONSUME_LIQUID_CLEANER_1_ITEM_LIQUID_SEWAGE,
+    inputs: [{ itemId: ItemId.ITEM_LIQUID_SEWAGE, amount: 1 }],
+    outputs: [],
+    facilityId: FacilityId.ITEM_PORT_LIQUID_CLEANER_1,
     craftingTime: 2,
   },
 ];

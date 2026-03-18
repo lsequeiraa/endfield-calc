@@ -226,10 +226,11 @@ function buildBipartiteGraph(
     selectedRecipe.outputs.forEach((out) => {
       graph.recipeOutputs.get(selectedRecipe.id)!.add(out.itemId);
 
-      // Ensure byproduct items exist in the graph as produced (non-raw) nodes
-      // and are marked as visited so they reuse this recipe instead of selecting a new one.
-      // Exception: target items are NOT marked as visited — they need their own
-      // recipe selection to ensure an external production path exists.
+      // Ensure byproduct items exist in the graph as produced (non-raw) nodes.
+      // Byproducts are NOT marked as visited so that if they are later consumed
+      // by another recipe, the traverse can discover an external production recipe
+      // for them. This is essential for cycles with net deficits (e.g., liquid_sewage
+      // in the Xircon chain needs an external source via furnace).
       if (!graph.itemNodes.has(out.itemId)) {
         const outItem = maps.itemMap.get(out.itemId);
         if (outItem) {
@@ -238,9 +239,6 @@ function buildBipartiteGraph(
             item: outItem,
             isRawMaterial: false,
           });
-          if (!graph.targets.has(out.itemId)) {
-            visitedItems.add(out.itemId);
-          }
         }
       }
     });
@@ -554,9 +552,21 @@ function solveSCCFlow(
 ): boolean {
   console.log(`[SCC_SOLVE] Solving flow for SCC: ${scc.id}`);
 
+  const recipesList = Array.from(scc.recipes).map(
+    (rid) => maps.recipeMap.get(rid)!,
+  );
+  const itemsList = Array.from(scc.items);
+  const n = itemsList.length;
+  const m = recipesList.length;
+
+  if (m === 0 || n === 0) {
+    console.log(`  [SCC_SOLVE] Empty system, skipping`);
+    return false;
+  }
+
+  // --- Phase 1: Compute external demands for SCC-internal items ---
   const externalDemands = new Map<ItemId, number>();
 
-  // Calculate external demands for each item in the SCC
   scc.items.forEach((itemId) => {
     let demand = 0;
 
@@ -594,82 +604,261 @@ function solveSCCFlow(
     }
   });
 
-  console.log(`  External demands count: ${externalDemands.size}`);
-  externalDemands.forEach((demand, itemId) => {
-    console.log(`    ${itemId}: ${demand.toFixed(4)}/min`);
-  });
+  // --- Phase 2: Compute external output demands ---
+  // Items OUTSIDE the SCC that are produced by SCC recipes and have demand.
+  // These constrain ("pin") the facility counts for the producing recipes.
+  const externalOutputDemands = new Map<
+    number,
+    { itemId: ItemId; demand: number; rate: number }[]
+  >();
+  let hasExternalOutputDemand = false;
 
-  // Early exit if no external demand
-  if (externalDemands.size === 0) {
-    console.log(`  [SCC_SOLVE] No external demand, this is an invalid cycle`);
-    return false; // Changed: return false instead of return
+  for (let j = 0; j < m; j++) {
+    const recipe = recipesList[j];
+    const demands: { itemId: ItemId; demand: number; rate: number }[] = [];
+
+    for (const out of recipe.outputs) {
+      if (scc.items.has(out.itemId)) continue; // Skip SCC-internal items
+
+      const demand = itemDemands.get(out.itemId) || 0;
+      if (demand > 0) {
+        const rate = calcRate(out.amount, recipe.craftingTime);
+        demands.push({ itemId: out.itemId, demand, rate });
+        console.log(
+          `    Recipe ${recipe.id} produces external item ${out.itemId} with demand: ${demand.toFixed(4)}/min (rate: ${rate.toFixed(4)}/facility)`,
+        );
+      }
+    }
+
+    if (demands.length > 0) {
+      externalOutputDemands.set(j, demands);
+      hasExternalOutputDemand = true;
+    }
   }
 
-  const itemsList = Array.from(scc.items);
-  const recipesList = Array.from(scc.recipes).map(
-    (rid) => maps.recipeMap.get(rid)!,
+  // Early exit if no demand at all (neither internal nor external output)
+  if (externalDemands.size === 0 && !hasExternalOutputDemand) {
+    console.log(`  [SCC_SOLVE] No external demand, this is an invalid cycle`);
+    return false;
+  }
+
+  console.log(
+    `  External demands (internal items): ${externalDemands.size}, External output demands: ${externalOutputDemands.size}`,
   );
 
-  const n = itemsList.length;
-  const m = recipesList.length;
+  // --- Phase 3: Solve with pinned facility counts ---
+  // Pin facility counts for recipes that produce external items with demand.
+  const pinnedRecipes = new Map<number, number>(); // recipe index → facility count
 
-  console.log(`  Building linear system: ${n} items × ${m} recipes`);
+  externalOutputDemands.forEach((demands, j) => {
+    let pinnedCount = 0;
+    for (const { demand, rate } of demands) {
+      if (rate > 0) {
+        pinnedCount = Math.max(pinnedCount, demand / rate);
+      }
+    }
+    pinnedRecipes.set(j, pinnedCount);
+    console.log(
+      `  Pinning recipe ${recipesList[j].id} (index ${j}) to ${pinnedCount.toFixed(4)} facilities`,
+    );
+  });
 
-  if (m === 0 || n === 0) {
-    console.log(`  [SCC_SOLVE] Empty system, skipping`);
-    return false; // Changed: return false instead of return
+  if (pinnedRecipes.size > 0) {
+    // Build reduced system: substitute pinned values, solve for remaining recipes
+    const freeIndices = Array.from({ length: m }, (_, i) => i).filter(
+      (i) => !pinnedRecipes.has(i),
+    );
+    const freeM = freeIndices.length;
+
+    console.log(
+      `  Building reduced system: ${n} items × ${freeM} free recipes (${pinnedRecipes.size} pinned)`,
+    );
+
+    const matrix: number[][] = [];
+    const constants: number[] = [];
+
+    for (let i = 0; i < n; i++) {
+      const itemId = itemsList[i];
+      const row = new Array(freeM).fill(0);
+
+      // Start with external demand
+      let rhs = externalDemands.get(itemId) || 0;
+
+      for (let j = 0; j < m; j++) {
+        const recipe = recipesList[j];
+        const output =
+          recipe.outputs.find((o) => o.itemId === itemId)?.amount || 0;
+        const input =
+          recipe.inputs.find((inp) => inp.itemId === itemId)?.amount || 0;
+        const coeff = calcRate(output, recipe.craftingTime) - calcRate(input, recipe.craftingTime);
+
+        if (pinnedRecipes.has(j)) {
+          // Move pinned contribution to RHS
+          rhs -= coeff * pinnedRecipes.get(j)!;
+        } else {
+          const freeIdx = freeIndices.indexOf(j);
+          row[freeIdx] = coeff;
+        }
+      }
+
+      matrix.push(row);
+      constants.push(rhs);
+
+      console.log(
+        `    Equation ${i} (${itemId}):`,
+        row.map((v, fi) => `${v.toFixed(2)}*r${freeIndices[fi]}`).join(" + "),
+        `= ${rhs.toFixed(4)}`,
+      );
+    }
+
+    // Solve the reduced system
+    let freeSolution: number[] | null;
+    if (freeM === 0) {
+      // All recipes are pinned — no system to solve
+      freeSolution = [];
+    } else if (n > freeM) {
+      // Overdetermined system (more equations than free variables).
+      // The linear solver expects a square matrix, so we solve for the
+      // maximum required facility counts to satisfy the tightest constraints.
+      // Deficits in other equations are handled by Phase 4 (external supply).
+      if (freeM === 1) {
+        // Single free variable: take the max of b/a across all equations
+        let maxR = 0;
+        for (let i = 0; i < n; i++) {
+          const a = matrix[i][0];
+          const b = constants[i];
+          if (Math.abs(a) > 1e-9) {
+            const r = b / a;
+            if (r > maxR) maxR = r;
+          }
+        }
+        freeSolution = [maxR];
+        console.log(
+          `  Overdetermined 1-var system: solved r = ${maxR.toFixed(4)}`,
+        );
+      } else {
+        // Multi-variable overdetermined: use first freeM equations as primary
+        // and compute residuals for the rest.
+        const subMatrix = matrix.slice(0, freeM);
+        const subConstants = constants.slice(0, freeM);
+        freeSolution = solveLinearSystem(subMatrix, subConstants);
+      }
+    } else {
+      freeSolution = solveLinearSystem(matrix, constants);
+    }
+
+    if (!freeSolution) {
+      console.warn(
+        `  [SCC_SOLVE] Cannot solve reduced SCC ${scc.id} - system has no solution`,
+      );
+      return false;
+    }
+
+    // Assemble full facility counts
+    console.log(`  Solution found:`);
+    for (let j = 0; j < m; j++) {
+      let facilityCount: number;
+      if (pinnedRecipes.has(j)) {
+        facilityCount = pinnedRecipes.get(j)!;
+      } else {
+        const freeIdx = freeIndices.indexOf(j);
+        facilityCount = Math.max(0, freeSolution[freeIdx]);
+      }
+      recipeFacilityCounts.set(recipesList[j].id, facilityCount);
+      console.log(
+        `    Recipe ${recipesList[j].id}: ${facilityCount.toFixed(4)} facilities${pinnedRecipes.has(j) ? " (pinned)" : ""}`,
+      );
+    }
+  } else {
+    // No pinned recipes — standard linear system solve (original path)
+    console.log(`  Building linear system: ${n} items × ${m} recipes`);
+
+    const matrix: number[][] = [];
+    const constants: number[] = [];
+
+    for (let i = 0; i < n; i++) {
+      const itemId = itemsList[i];
+      const row = new Array(m).fill(0);
+
+      for (let j = 0; j < m; j++) {
+        const recipe = recipesList[j];
+        const output =
+          recipe.outputs.find((o) => o.itemId === itemId)?.amount || 0;
+        const input =
+          recipe.inputs.find((inp) => inp.itemId === itemId)?.amount || 0;
+        row[j] = calcRate(output, recipe.craftingTime) - calcRate(input, recipe.craftingTime);
+      }
+
+      matrix.push(row);
+      constants.push(externalDemands.get(itemId) || 0);
+
+      console.log(
+        `    Equation ${i} (${itemId}):`,
+        row.map((v, j) => `${v.toFixed(2)}*r${j}`).join(" + "),
+        `= ${constants[i].toFixed(4)}`,
+      );
+    }
+
+    const solution = solveLinearSystem(matrix, constants);
+
+    if (!solution) {
+      console.warn(
+        `  [SCC_SOLVE] Cannot solve SCC ${scc.id} - system has no solution`,
+      );
+      return false;
+    }
+
+    console.log(`  Solution found:`);
+    for (let j = 0; j < m; j++) {
+      const facilityCount = Math.max(0, solution[j]);
+      recipeFacilityCounts.set(recipesList[j].id, facilityCount);
+      console.log(
+        `    Recipe ${recipesList[j].id}: ${facilityCount.toFixed(4)} facilities`,
+      );
+    }
   }
 
-  const matrix: number[][] = [];
-  const constants: number[] = [];
-
-  // Build linear equation system
+  // --- Phase 4: Compute deficits for SCC-internal items and propagate ---
+  // After solving, some internal items may have a net deficit (consumed more
+  // than produced within the SCC). Propagate deficits as demand to external
+  // producers (e.g., liquid_sewage deficit filled by furnace outside the SCC).
   for (let i = 0; i < n; i++) {
     const itemId = itemsList[i];
-    const row = new Array(m).fill(0);
+    let netProduction = 0;
 
     for (let j = 0; j < m; j++) {
       const recipe = recipesList[j];
+      const facilityCount = recipeFacilityCounts.get(recipe.id) || 0;
       const output =
         recipe.outputs.find((o) => o.itemId === itemId)?.amount || 0;
       const input =
         recipe.inputs.find((inp) => inp.itemId === itemId)?.amount || 0;
 
-      const outRate = (output * 60) / recipe.craftingTime;
-      const inRate = (input * 60) / recipe.craftingTime;
-      row[j] = outRate - inRate;
+      netProduction +=
+        (calcRate(output, recipe.craftingTime) - calcRate(input, recipe.craftingTime)) *
+        facilityCount;
     }
 
-    matrix.push(row);
-    constants.push(externalDemands.get(itemId) || 0);
+    const externalDemand = externalDemands.get(itemId) || 0;
+    const deficit = externalDemand - netProduction;
 
-    console.log(
-      `    Equation ${i} (${itemId}):`,
-      row.map((v, j) => `${v.toFixed(2)}*r${j}`).join(" + "),
-      `= ${constants[i].toFixed(4)}`,
-    );
+    if (deficit > 1e-9) {
+      // This item needs external supply — set itemDemands so external
+      // producers (processed later in the condensed DAG walk) can satisfy it.
+      // Use Math.max rather than addition: the deficit already accounts for
+      // all external demand (including target rates from Phase 1), so adding
+      // would double-count any pre-existing demand in itemDemands.
+      itemDemands.set(
+        itemId,
+        Math.max(itemDemands.get(itemId) || 0, deficit),
+      );
+      console.log(
+        `  Item ${itemId} has deficit of ${deficit.toFixed(4)}/min — propagated to external producers`,
+      );
+    }
   }
 
-  // Solve the system
-  const solution = solveLinearSystem(matrix, constants);
-
-  if (!solution) {
-    console.warn(
-      `  [SCC_SOLVE] Cannot solve SCC ${scc.id} - system has no solution`,
-    );
-    return false; // Changed: return false
-  }
-
-  console.log(`  Solution found:`);
-  for (let j = 0; j < m; j++) {
-    const facilityCount = Math.max(0, solution[j]);
-    recipeFacilityCounts.set(recipesList[j].id, facilityCount);
-    console.log(
-      `    Recipe ${recipesList[j].id}: ${facilityCount.toFixed(4)} facilities`,
-    );
-  }
-
-  // Propagate demands to external inputs
+  // --- Phase 5: Propagate demands to external inputs ---
   scc.externalInputs.forEach((inputItemId) => {
     let totalConsumption = 0;
 
@@ -696,7 +885,7 @@ function solveSCCFlow(
     }
   });
 
-  return true; // Changed: return true on success
+  return true;
 }
 
 /**

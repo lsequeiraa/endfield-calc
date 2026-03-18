@@ -15,6 +15,7 @@ import {
   complexRecipes,
   byproductRecipes,
   byproductSCCRecipes,
+  xirconRecipes,
 } from "./fixtures/test-data";
 
 const getNode = (
@@ -490,9 +491,10 @@ describe("Byproduct Recipes", () => {
 
 describe("Byproduct with SCC Cycle", () => {
   test("byproduct target survives when one producer is in a zero-output SCC", () => {
-    // Three targets: Copper Component + Proc Battery + Liquid Sewage
-    // Sewage is produced by the copper furnace (non-zero) AND by Pool B (in SCC, zero).
-    // The SCC (Pool A ↔ Pool B via Sewage/Intermediate) is a net consumer of Sewage.
+    // Three targets: Copper Component (30) + Proc Battery (30) + Liquid Sewage (30)
+    // The battery chain pulls in the Xircon SCC. The SCC has a 30/min sewage deficit,
+    // plus the 30/min sewage target = 60/min external sewage needed.
+    // The furnace (also needed for copper_cmpt) supplies all external sewage.
     const plan = calculateProductionPlan(
       [
         { itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 },
@@ -504,24 +506,33 @@ describe("Byproduct with SCC Cycle", () => {
       mockFacilities,
     );
 
-    // Liquid Sewage must appear in the plan as a target
-    expect(plan.nodes.has(ItemId.ITEM_LIQUID_SEWAGE)).toBe(true);
-    const sewageNode = getItemNode(plan, ItemId.ITEM_LIQUID_SEWAGE);
-    expect(sewageNode.isTarget).toBe(true);
-
-    // Sewage should have non-zero production from the furnace
-    expect(sewageNode.productionRate).toBeGreaterThan(0);
-
-    // Copper Component and Battery should also be in the plan
-    expect(plan.nodes.has(ItemId.ITEM_COPPER_CMPT)).toBe(true);
-    expect(plan.nodes.has(ItemId.ITEM_PROC_BATTERY_1)).toBe(true);
+    // All three targets should be in the plan
+    expect(getItemNode(plan, ItemId.ITEM_LIQUID_SEWAGE).isTarget).toBe(true);
     expect(getItemNode(plan, ItemId.ITEM_COPPER_CMPT).isTarget).toBe(true);
     expect(getItemNode(plan, ItemId.ITEM_PROC_BATTERY_1).isTarget).toBe(true);
+
+    // SCC recipes should have correct facility counts
+    const poolB = plan.nodes.get(RecipeId.POOL_XIRANITE_POLY_1);
+    if (poolB?.type === "recipe") {
+      expect(poolB.facilityCount).toBeCloseTo(1, 5);
+    }
+    const poolA = plan.nodes.get(RecipeId.POOL_LIQUID_XIRANITE_POLY_1);
+    if (poolA?.type === "recipe") {
+      expect(poolA.facilityCount).toBeCloseTo(2, 5);
+    }
+
+    // Furnace: max(copper_nugget demand=30/rate=30, sewage demand=60/rate=30) = 2 facilities
+    const furnace = plan.nodes.get(RecipeId.FURNANCE_COPPER_NUGGET_1);
+    if (furnace?.type === "recipe") {
+      expect(furnace.facilityCount).toBeCloseTo(2, 5);
+    }
   });
 
   test("byproduct produced by multiple recipes has summed rate", () => {
-    // When an item is produced by multiple recipes (furnace + SCC recipe),
-    // the production rate should sum contributions from all producers.
+    // Two targets: Copper Component (30) + Proc Battery (30)
+    // The battery chain pulls in the Xircon SCC (pool_xiranite_poly_1 produces 30/min sewage).
+    // The furnace (for copper_nugget) also produces 30/min sewage.
+    // Total sewage production = 60/min (30 from SCC + 30 from furnace).
     const plan = calculateProductionPlan(
       [
         { itemId: ItemId.ITEM_COPPER_CMPT, rate: 30 },
@@ -532,13 +543,10 @@ describe("Byproduct with SCC Cycle", () => {
       mockFacilities,
     );
 
-    // Sewage exists in the plan (as byproduct from furnace + SCC recipe)
-    expect(plan.nodes.has(ItemId.ITEM_LIQUID_SEWAGE)).toBe(true);
+    // Sewage produced by both furnace (30/min) and pool_xiranite_poly_1 (30/min)
     const sewageNode = getItemNode(plan, ItemId.ITEM_LIQUID_SEWAGE);
-
-    // Rate should be >= furnace contribution (at least 30/min from 1 furnace)
-    // The SCC may add additional production (or 0 if clamped)
-    expect(sewageNode.productionRate).toBeGreaterThanOrEqual(30);
+    // Total production = 60/min (but 60/min is also consumed by the SCC cycle, so net = 0)
+    expect(sewageNode.productionRate).toBeCloseTo(60, 5);
   });
 });
 
@@ -689,5 +697,166 @@ describe("Stress Tests", () => {
     }
 
     expect(depth).toBe(10);
+  });
+});
+
+describe("Xircon Production Chain", () => {
+  // Rate D = 30/min. Per facility rates are 30/min (craftingTime=2, amount=1).
+  // Expected facility counts for D=30: all recipes need 1.0 except
+  // pool_liquid_xiranite_poly_1 which needs 2.0 (produces 1 per cycle,
+  // but 2 liquid_xiranite_poly are consumed per xiranite_poly).
+  const D = 30;
+
+  test("produces xiranite_poly with correct facility counts", () => {
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_XIRANITE_POLY, rate: D }],
+      mockItems,
+      xirconRecipes,
+      mockFacilities,
+    );
+
+    // Xiranite Poly is in the plan as a target
+    expect(plan.nodes.has(ItemId.ITEM_XIRANITE_POLY)).toBe(true);
+    const xirconNode = getItemNode(plan, ItemId.ITEM_XIRANITE_POLY);
+    expect(xirconNode.isTarget).toBe(true);
+    expect(xirconNode.productionRate).toBeCloseTo(D, 5);
+
+    // pool_xiranite_poly_1: produces 1 xiranite_poly per cycle → 1 facility for 30/min
+    const poolB = plan.nodes.get(RecipeId.POOL_XIRANITE_POLY_1);
+    expect(poolB).toBeDefined();
+    if (poolB?.type === "recipe") {
+      expect(poolB.facilityCount).toBeCloseTo(1, 5);
+    }
+
+    // pool_liquid_xiranite_poly_1: needs 2 facilities (2 liquid_xiranite_poly consumed per xiranite_poly)
+    const poolA = plan.nodes.get(RecipeId.POOL_LIQUID_XIRANITE_POLY_1);
+    expect(poolA).toBeDefined();
+    if (poolA?.type === "recipe") {
+      expect(poolA.facilityCount).toBeCloseTo(2, 5);
+    }
+  });
+
+  test("includes external sewage source for cycle deficit", () => {
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_XIRANITE_POLY, rate: D }],
+      mockItems,
+      xirconRecipes,
+      mockFacilities,
+    );
+
+    // furnance_copper_nugget_1 must be in the plan as external sewage source
+    const furnace = plan.nodes.get(RecipeId.FURNANCE_COPPER_NUGGET_1);
+    expect(furnace).toBeDefined();
+    if (furnace?.type === "recipe") {
+      // Deficit is D/min sewage → 1 facility at 30/min
+      expect(furnace.facilityCount).toBeCloseTo(1, 5);
+    }
+
+    // Copper nugget appears as unwanted byproduct
+    expect(plan.nodes.has(ItemId.ITEM_COPPER_NUGGET)).toBe(true);
+  });
+
+  test("liquid_xiranite_lowpoly surplus is disposed", () => {
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_XIRANITE_POLY, rate: D }],
+      mockItems,
+      xirconRecipes,
+      mockFacilities,
+    );
+
+    // 2 facilities of pool_liquid_xiranite_poly_1 produce 2D lowpoly → disposal needed
+    const disposalId =
+      RecipeId.FLUID_CONSUME_LIQUID_CLEANER_1_ITEM_LIQUID_XIRANITE_LOWPOLY;
+    expect(plan.nodes.has(disposalId)).toBe(true);
+    const disposal = plan.nodes.get(disposalId)!;
+    if (disposal.type === "recipe") {
+      expect(disposal.isDisposal).toBe(true);
+      // 2D=60 surplus / 30 per facility = 2 disposal facilities
+      expect(disposal.facilityCount).toBeCloseTo(2, 5);
+    }
+  });
+
+  test("liquid_sewage is fully consumed with no disposal needed", () => {
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_XIRANITE_POLY, rate: D }],
+      mockItems,
+      xirconRecipes,
+      mockFacilities,
+    );
+
+    // Sewage: produced 2D (1D from pool_xiranite_poly_1 + 1D from furnace),
+    // consumed 2D (by pool_liquid_xiranite_poly_1 running at 2 facilities).
+    // No surplus → no disposal.
+    const sewageDisposalId =
+      RecipeId.FLUID_CONSUME_LIQUID_CLEANER_1_ITEM_LIQUID_SEWAGE;
+    expect(plan.nodes.has(sewageDisposalId)).toBe(false);
+  });
+
+  test("upstream recipes have correct facility counts", () => {
+    const plan = calculateProductionPlan(
+      [{ itemId: ItemId.ITEM_XIRANITE_POLY, rate: D }],
+      mockItems,
+      xirconRecipes,
+      mockFacilities,
+    );
+
+    // pool_liquid_liquid_xiranite_1: 2 facilities (feeds 2 pool_liquid_xiranite_poly_1)
+    const liquidXiranite = plan.nodes.get(
+      RecipeId.POOL_LIQUID_LIQUID_XIRANITE_1,
+    );
+    expect(liquidXiranite).toBeDefined();
+    if (liquidXiranite?.type === "recipe") {
+      expect(liquidXiranite.facilityCount).toBeCloseTo(2, 5);
+    }
+
+    // xiranite_oven: 2 facilities (feeds pool_liquid_liquid_xiranite_1)
+    const oven = plan.nodes.get(RecipeId.XIRANITE_OVEN_XIRANITE_POWDER_1);
+    expect(oven).toBeDefined();
+    if (oven?.type === "recipe") {
+      expect(oven.facilityCount).toBeCloseTo(2, 5);
+    }
+  });
+
+  test("dual target: xircon + sewage produces correct facility counts", () => {
+    // When both xiranite_poly AND liquid_sewage are targets, the SCC deficit
+    // (30/min) plus the sewage target (30/min) means the furnace must supply
+    // 60/min total → 2 facilities. The deficit must not double-count the
+    // target demand that's already included in the SCC's external demand.
+    const plan = calculateProductionPlan(
+      [
+        { itemId: ItemId.ITEM_XIRANITE_POLY, rate: D },
+        { itemId: ItemId.ITEM_LIQUID_SEWAGE, rate: D },
+      ],
+      mockItems,
+      xirconRecipes,
+      mockFacilities,
+    );
+
+    // Both targets should be in the plan
+    expect(getItemNode(plan, ItemId.ITEM_XIRANITE_POLY).isTarget).toBe(true);
+    expect(getItemNode(plan, ItemId.ITEM_LIQUID_SEWAGE).isTarget).toBe(true);
+
+    // SCC recipes: same facility counts as single-target case
+    const poolB = plan.nodes.get(RecipeId.POOL_XIRANITE_POLY_1);
+    if (poolB?.type === "recipe") {
+      expect(poolB.facilityCount).toBeCloseTo(1, 5);
+    }
+
+    const poolA = plan.nodes.get(RecipeId.POOL_LIQUID_XIRANITE_POLY_1);
+    if (poolA?.type === "recipe") {
+      expect(poolA.facilityCount).toBeCloseTo(2, 5);
+    }
+
+    // Furnace: 60/min sewage needed (30 deficit + 30 target) → 2 facilities
+    const furnace = plan.nodes.get(RecipeId.FURNANCE_COPPER_NUGGET_1);
+    expect(furnace).toBeDefined();
+    if (furnace?.type === "recipe") {
+      expect(furnace.facilityCount).toBeCloseTo(2, 5);
+    }
+
+    // No sewage disposal — all sewage is consumed by cycle or targeted
+    const sewageDisposalId =
+      RecipeId.FLUID_CONSUME_LIQUID_CLEANER_1_ITEM_LIQUID_SEWAGE;
+    expect(plan.nodes.has(sewageDisposalId)).toBe(false);
   });
 });

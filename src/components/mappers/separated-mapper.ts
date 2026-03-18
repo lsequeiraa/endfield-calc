@@ -17,7 +17,7 @@ import {
   createDisposalSinkNode,
 } from "../flow/flow-utils";
 import { createTargetSinkId, createPickupPointId } from "@/lib/node-keys";
-import { getRecipeOutputItemId, getRecipeInputItemId, getNonDisposalProducerRecipeId } from "@/lib/plan-helpers";
+import { getRecipeOutputItemId, getRecipeInputItemId, getItemProducers, isRecipeTerminal } from "@/lib/plan-helpers";
 import {
   calcRate,
   getOutputAmount,
@@ -59,6 +59,36 @@ export function mapPlanToFlowSeparated(
       upstreamItemIds.add(edge.from);
     }
   });
+
+  // Pre-build SCC cycle recipe pairs for backward edge detection.
+  // Two recipes are "cycle partners" if they appear in the same detected SCC.
+  const cyclePairs = new Set<string>();
+  plan.detectedCycles.forEach((cycle) => {
+    const recipeIds = cycle.cycleNodes
+      .filter((cn) => cn.recipe !== null)
+      .map((cn) => cn.recipe!.id);
+    for (const a of recipeIds) {
+      for (const b of recipeIds) {
+        if (a !== b) cyclePairs.add(`${a}:${b}`);
+      }
+    }
+  });
+
+  /** Extract recipe ID from a facility instance ID ("recipeId-f0" → "recipeId") */
+  function getRecipeIdFromFacilityId(facilityId: string): string | null {
+    const match = facilityId.match(/^(.+)-f\d+$/);
+    return match ? match[1] : null;
+  }
+
+  /** Check if producer and consumer recipes are in the same SCC cycle */
+  function isInSameCycle(
+    producerRecipeId: string,
+    consumerFacilityId: string,
+  ): boolean {
+    const consumerRecipeId = getRecipeIdFromFacilityId(consumerFacilityId);
+    if (!consumerRecipeId) return false;
+    return cyclePairs.has(`${producerRecipeId}:${consumerRecipeId}`);
+  }
 
   // Create pools for all recipe nodes
   plan.nodes.forEach((node, nodeId) => {
@@ -181,27 +211,40 @@ export function mapPlanToFlowSeparated(
       | undefined;
     if (!itemNode) return;
 
-    // Find producer recipe
-    const producerRecipeId = Array.from(plan.edges).find(
-      (e) => e.to === itemId && plan.nodes.get(e.from)?.type === "recipe",
-    )?.from;
+    // Find ALL producer recipes with their production rates.
+    const producers = getItemProducers(plan, itemId);
 
-    if (!producerRecipeId) {
+    if (producers.length === 0) {
       // Raw material — create pickup point nodes and allocate
       ensurePickupPointNodes(itemId, itemNode.item, itemNode.productionRate);
       allocateFromPickupPoints(itemId, itemNode.item, demandRate, consumerFacilityId);
       return;
     }
 
-    // Check for circular dependency (backward edge)
-    const isBackward = consumerFacilityId.startsWith(producerRecipeId);
+    // Greedy cascade: fill demand from one producer before moving to the next.
+    // This produces whole-facility assignments and minimizes pipe connections,
+    // unlike proportional split which sends fractional amounts to every producer.
+    // Sort by rate descending so large producers are assigned first.
+    const sorted = [...producers].sort((a, b) => b.rate - a.rate);
 
-    allocateFromPool(
-      producerRecipeId,
-      demandRate,
-      consumerFacilityId,
-      isBackward ? "backward" : undefined,
-    );
+    let remainingDemand = demandRate;
+
+    for (const producer of sorted) {
+      if (remainingDemand <= 0.001) break;
+
+      const isBackward = isInSameCycle(producer.recipeId, consumerFacilityId);
+      const toAllocate = Math.min(remainingDemand, producer.rate);
+
+      allocateFromPool(
+        producer.recipeId,
+        toAllocate,
+        consumerFacilityId,
+        isBackward ? "backward" : undefined,
+        itemId,
+      );
+
+      remainingDemand -= toAllocate;
+    }
   }
 
   function allocateFromPool(
@@ -209,34 +252,101 @@ export function mapPlanToFlowSeparated(
     demandRate: number,
     consumerFacilityId: string,
     edgeDirection?: "backward",
+    demandedItemId?: string,
   ): void {
     if (!poolManager.hasPool(recipeId)) {
       console.warn(`Pool not found for ${recipeId}`);
       return;
     }
 
-    const allocations = poolManager.allocate(recipeId, demandRate);
     const recipeNode = plan.nodes.get(recipeId) as Extract<
       ProductionGraphNode,
       { type: "recipe" }
     >;
-    const outputItemId = getRecipeOutputItemId(plan, recipeId);
-    const outputItemNode = outputItemId
-      ? (plan.nodes.get(outputItemId) as
+    const primaryOutputId = getRecipeOutputItemId(plan, recipeId);
+    const primaryOutputNode = primaryOutputId
+      ? (plan.nodes.get(primaryOutputId) as
           | Extract<ProductionGraphNode, { type: "item" }>
           | undefined)
       : undefined;
 
-    if (!recipeNode || !outputItemNode) return;
+    if (!recipeNode || !primaryOutputNode) return;
+
+    // Determine the item actually being demanded (for edge display).
+    // Falls back to primary output when demandedItemId is not specified
+    // (e.g., when called from the main loop or target sink pass).
+    const demandedNode = demandedItemId
+      ? (plan.nodes.get(demandedItemId) as
+          | Extract<ProductionGraphNode, { type: "item" }>
+          | undefined)
+      : undefined;
+    const edgeItem = demandedNode?.item ?? primaryOutputNode.item;
+
+    // When the demanded item is a byproduct (not the primary output),
+    // convert the demand rate to pool units (primary output denomination).
+    // Pool capacity is tracked in primary output units, so byproduct demands
+    // must be converted to avoid over/under-allocation.
+    const isByproductDemand =
+      demandedItemId && demandedItemId !== primaryOutputId;
+    let poolDemandRate = demandRate;
+    let conversionRatio = 1; // byproduct-to-primary ratio for converting back
+
+    if (isByproductDemand) {
+      const byproductAmount =
+        recipeNode.recipe.outputs.find((o) => o.itemId === demandedItemId)
+          ?.amount || 0;
+      const primaryAmount =
+        recipeNode.recipe.outputs.find((o) => o.itemId === primaryOutputId)
+          ?.amount || 0;
+
+      if (byproductAmount > 0 && primaryAmount > 0) {
+        conversionRatio = byproductAmount / primaryAmount;
+        poolDemandRate = demandRate / conversionRatio;
+      }
+    }
+
+    // For byproduct demands, first allocate from already-consumed capacity
+    // (facilities running for their primary output produce byproducts for free).
+    // Then fall through to regular allocate() for any remaining demand to
+    // activate new facility instances if needed.
+    let allocations: { sourceNodeId: string; allocatedAmount: number; fromFacilityIndex: number }[];
+
+    if (isByproductDemand && demandedItemId) {
+      allocations = poolManager.allocateByproduct(
+        recipeId,
+        poolDemandRate,
+        conversionRatio,
+        demandedItemId,
+      );
+
+      // Check if byproduct allocation fully satisfied the demand
+      const satisfiedPrimary = allocations.reduce(
+        (sum, a) => sum + a.allocatedAmount,
+        0,
+      );
+      const remainingPrimary = poolDemandRate - satisfiedPrimary;
+
+      if (remainingPrimary > 0.001) {
+        // Some facilities haven't been activated yet — allocate normally
+        // to trigger their first-visit processing
+        const additional = poolManager.allocate(recipeId, remainingPrimary);
+        allocations = allocations.concat(additional);
+      }
+    } else {
+      allocations = poolManager.allocate(recipeId, poolDemandRate);
+    }
 
     allocations.forEach((allocation) => {
+      // Convert allocated amount back to demanded item units for edge display
+      const edgeRate = allocation.allocatedAmount * conversionRatio;
+
       edges.push(
         createEdge(
           `e${edgeIdCounter++}`,
           allocation.sourceNodeId,
           consumerFacilityId,
-          allocation.allocatedAmount,
-          outputItemNode.item,
+          edgeRate,
+          edgeItem,
           edgeDirection,
           ceilMode,
         ),
@@ -256,18 +366,18 @@ export function mapPlanToFlowSeparated(
             facilityInstance.actualOutputRate <
             facilityInstance.maxOutputRate * 0.999;
 
-          // Create facility node
+          // Create facility node — always displays the primary output
           flowNodes.push(
             createProductionFlowNode(
               allocation.sourceNodeId,
               {
-                item: outputItemNode.item,
+                item: primaryOutputNode.item,
                 targetRate: facilityInstance.actualOutputRate,
                 recipe: recipeNode.recipe,
                 facility: recipeNode.facility,
                 facilityCount: 1,
                 isRawMaterial: false,
-                isTarget: outputItemNode.isTarget,
+                isTarget: primaryOutputNode.isTarget,
                 dependencies: [],
               },
               items,
@@ -282,8 +392,13 @@ export function mapPlanToFlowSeparated(
             ),
           );
 
+          // Allocate upstream inputs based on primary output rate
+          // (inputs scale with recipe execution rate, not byproduct rate)
           recipeNode.recipe.inputs.forEach((input) => {
-            const outputAmount = getOutputAmount(recipeNode.recipe, outputItemNode.item.id);
+            const outputAmount = getOutputAmount(
+              recipeNode.recipe,
+              primaryOutputNode.item.id,
+            );
             const inputDemandRate =
               calcRate(input.amount, recipeNode.recipe.craftingTime) *
               (facilityInstance.actualOutputRate /
@@ -310,7 +425,10 @@ export function mapPlanToFlowSeparated(
           | undefined)
       : undefined;
 
-    if (!outputItemNode || outputItemNode.isTarget) return;
+    // Skip recipes handled by the target sink pass. Only skip truly terminal
+    // recipes — multi-output recipes with secondary outputs consumed by other
+    // recipes (e.g., pool_xiranite_poly_1) must be processed here.
+    if (!outputItemNode || isRecipeTerminal(plan, nodeId)) return;
 
     const facilityInstances = poolManager.getFacilityInstances(nodeId);
 
@@ -601,62 +719,70 @@ export function mapPlanToFlowSeparated(
       ),
     );
 
-    // Create edges from producing facilities to disposal sink
-    // Find facility instances that produce the waste item
-    const producerRecipeId = getNonDisposalProducerRecipeId(plan, consumedItemId);
+    // Create edges from ALL producing facilities to disposal sink
+    const producers = getItemProducers(plan, consumedItemId);
 
-    if (producerRecipeId && poolManager.hasPool(producerRecipeId)) {
-      const facilityInstances =
-        poolManager.getFacilityInstances(producerRecipeId);
+    for (const producer of producers) {
+      if (poolManager.hasPool(producer.recipeId)) {
+        const facilityInstances =
+          poolManager.getFacilityInstances(producer.recipeId);
 
-      // Compute per-facility byproduct rate and subtract target allocation
-      const producerRecipeNode = plan.nodes.get(producerRecipeId);
+        // Compute per-facility byproduct rate and subtract target allocation
+        const producerRecipeNode = plan.nodes.get(producer.recipeId);
 
-      facilityInstances.forEach((fi) => {
-        // Compute this facility's total byproduct output
-        let facilityByproductRate: number;
-        if (producerRecipeNode?.type === "recipe") {
-          facilityByproductRate = calcByproductRate(producerRecipeNode.recipe, consumedItemNode.itemId, fi.actualOutputRate);
-        } else {
-          facilityByproductRate = disposalRate / facilityInstances.length;
-        }
+        facilityInstances.forEach((fi) => {
+          let facilityByproductRate: number;
+          if (producerRecipeNode?.type === "recipe") {
+            facilityByproductRate = calcByproductRate(
+              producerRecipeNode.recipe,
+              consumedItemNode.itemId,
+              fi.actualOutputRate,
+            );
+          } else {
+            facilityByproductRate = disposalRate / facilityInstances.length;
+          }
 
-        // Subtract what was already allocated to targets
-        const allocatedToTarget =
-          byproductAllocatedToTarget.get(`${fi.facilityId}:${consumedItemNode.itemId}`) ?? 0;
-        const remaining = facilityByproductRate - allocatedToTarget;
+          // Subtract what was already allocated to targets
+          const allocatedToTarget =
+            byproductAllocatedToTarget.get(
+              `${fi.facilityId}:${consumedItemNode.itemId}`,
+            ) ?? 0;
+          const remaining = facilityByproductRate - allocatedToTarget;
 
-        if (remaining > 0.01) {
-          edges.push(
-            createEdge(
-              `e${edgeIdCounter++}`,
-              fi.facilityId,
-              disposalSinkId,
-              remaining,
-              consumedItemNode.item,
-              undefined,
-              ceilMode,
-              1, // Each facility instance is one physical building
-            ),
-          );
-        }
-      });
-    } else if (producerRecipeId) {
-      const producerNode = plan.nodes.get(producerRecipeId);
-      const producerFacilityCount =
-        producerNode?.type === "recipe" ? producerNode.facilityCount : undefined;
-      edges.push(
-        createEdge(
-          `e${edgeIdCounter++}`,
-          producerRecipeId,
-          disposalSinkId,
-          disposalRate,
-          consumedItemNode.item,
-          undefined,
-          ceilMode,
-          producerFacilityCount,
-        ),
-      );
+          if (remaining > 0.01) {
+            edges.push(
+              createEdge(
+                `e${edgeIdCounter++}`,
+                fi.facilityId,
+                disposalSinkId,
+                remaining,
+                consumedItemNode.item,
+                undefined,
+                ceilMode,
+                1,
+              ),
+            );
+          }
+        });
+      } else {
+        const producerNode = plan.nodes.get(producer.recipeId);
+        const producerFacilityCount =
+          producerNode?.type === "recipe"
+            ? producerNode.facilityCount
+            : undefined;
+        edges.push(
+          createEdge(
+            `e${edgeIdCounter++}`,
+            producer.recipeId,
+            disposalSinkId,
+            producer.rate,
+            consumedItemNode.item,
+            undefined,
+            ceilMode,
+            producerFacilityCount,
+          ),
+        );
+      }
     }
   });
 

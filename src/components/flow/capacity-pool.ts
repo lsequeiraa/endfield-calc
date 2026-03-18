@@ -14,10 +14,13 @@ import type {
 export class CapacityPoolManager {
   private pools: Map<string, CapacityPoolEntry>;
   private processedFacilities: Set<string>;
+  /** Tracks cumulative byproduct allocated per facility to prevent over-allocation */
+  private byproductAllocated: Map<string, number>;
 
   constructor() {
     this.pools = new Map();
     this.processedFacilities = new Set();
+    this.byproductAllocated = new Map();
   }
 
   /**
@@ -100,6 +103,79 @@ export class CapacityPoolManager {
       console.warn(
         `[CapacityPoolManager] Insufficient capacity for ${nodeKey}: ${remainingDemand.toFixed(2)}/min unsatisfied`,
       );
+    }
+
+    return results;
+  }
+
+  /**
+   * Allocates byproduct output from running facilities.
+   *
+   * When a facility runs for its primary output, byproducts are produced "for
+   * free" — one recipe execution produces all outputs simultaneously. This
+   * method allocates from that free byproduct without consuming pool capacity
+   * (which is denominated in primary output units).
+   *
+   * A facility is considered "running" if it has been processed (activated by
+   * the main loop or first-visit in allocateFromPool) or if its primary
+   * capacity has been consumed by a prior allocate() call.
+   *
+   * The conversionRatio (byproductAmount / primaryAmount) converts between
+   * primary output units and byproduct units. Allocation is tracked per
+   * facility to prevent over-allocation when multiple consumers demand the
+   * same byproduct.
+   *
+   * If demand exceeds the free byproduct from running facilities, the caller
+   * should follow up with a regular allocate() call for the remainder to
+   * activate new facility instances.
+   */
+  allocateByproduct(
+    nodeKey: string,
+    demandRate: number,
+    conversionRatio: number,
+    demandedItemId: string,
+  ): AllocationResult[] {
+    const pool = this.pools.get(nodeKey);
+    if (!pool) return [];
+
+    const results: AllocationResult[] = [];
+    let remainingDemand = demandRate;
+
+    for (const facility of pool.facilities) {
+      if (remainingDemand <= 0.001) break;
+
+      // A facility is "running" if it's been processed (main loop or
+      // first-visit) or if its capacity has been consumed by allocate()
+      const isRunning =
+        this.processedFacilities.has(facility.facilityId) ||
+        facility.remainingCapacity < facility.actualOutputRate - 0.001;
+
+      if (!isRunning) continue;
+
+      // Total byproduct this facility produces when running
+      const totalByproduct = facility.actualOutputRate * conversionRatio;
+
+      // Subtract byproduct already allocated from this facility for this item.
+      // Keyed by item ID (not recipe) so different byproducts from the same
+      // recipe are tracked independently.
+      const trackingKey = `${facility.facilityId}:${demandedItemId}`;
+      const alreadyAllocated = this.byproductAllocated.get(trackingKey) || 0;
+      const available = totalByproduct - alreadyAllocated;
+
+      if (available <= 0.001) continue;
+
+      const allocated = Math.min(available, remainingDemand);
+      this.byproductAllocated.set(trackingKey, alreadyAllocated + allocated);
+      remainingDemand -= allocated;
+
+      // Don't decrement remainingCapacity — byproduct is free.
+      // The facility is already running for its primary output;
+      // the byproduct is an inherent side effect of recipe execution.
+      results.push({
+        sourceNodeId: facility.facilityId,
+        allocatedAmount: allocated,
+        fromFacilityIndex: facility.facilityIndex,
+      });
     }
 
     return results;
