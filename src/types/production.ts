@@ -49,9 +49,23 @@ export type ProductionGraphNode =
       isDisposal?: boolean;
     };
 
+/**
+ * Represents an unsolvable production cycle that could not be resolved
+ * by either the SCC solver or feeder extension.
+ */
+export type InvalidCycleInfo = {
+  cycleId: string;
+  involvedItemIds: ItemId[];
+  involvedRecipeIds: RecipeId[];
+  reason: "no_solution" | "no_external_demand";
+  /** Item IDs with recipe overrides that contribute to this cycle */
+  overriddenItemIds: ItemId[];
+};
+
 export type ProductionDependencyGraph = {
   nodes: Map<string, ProductionGraphNode>;
   edges: Array<{ from: string; to: string }>;
   targets: Set<ItemId>;
   detectedCycles: DetectedCycle[];
+  invalidCycles: InvalidCycleInfo[];
 };

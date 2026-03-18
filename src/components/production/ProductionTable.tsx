@@ -35,6 +35,7 @@ export type ProductionLineData = {
   isRawMaterial?: boolean;
   isTarget?: boolean;
   isManualRawMaterial?: boolean;
+  isInvalidCycle?: boolean;
   isDisposal?: boolean;
   directDependencyItemIds?: Set<ItemId>;
 };
@@ -330,7 +331,10 @@ const ProductionTable = memo(function ProductionTable({
 
               // Determine row styling
               let rowClassName = "h-12 transition-all duration-200";
-              if (line.isTarget) {
+              if (line.isInvalidCycle) {
+                rowClassName =
+                  "h-12 transition-all duration-200 bg-red-50/50 dark:bg-red-900/10 hover:bg-red-100/70 dark:hover:bg-red-900/30";
+              } else if (line.isTarget) {
                 rowClassName =
                   "h-12 transition-all duration-200 bg-amber-50/50 dark:bg-amber-900/10 hover:bg-amber-100/70 dark:hover:bg-amber-900/30";
               } else if (isManualRaw) {
@@ -349,6 +353,7 @@ const ProductionTable = memo(function ProductionTable({
                     shouldDim && "opacity-30",
                     isHovered && "ring-2 ring-inset ring-blue-500/60 shadow-sm",
                     isDependency && "ring-1 ring-inset ring-green-500/40",
+                    line.isInvalidCycle && "ring-1 ring-inset ring-red-500/40",
                   ]
                     .filter(Boolean)
                     .join(" ")}
@@ -359,9 +364,13 @@ const ProductionTable = memo(function ProductionTable({
                   <TableCell
                     className={[
                       "p-2 relative",
+                      line.isInvalidCycle &&
+                        "before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-red-500",
                       line.isTarget &&
+                        !line.isInvalidCycle &&
                         "before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-amber-500",
                       isManualRaw &&
+                        !line.isInvalidCycle &&
                         "before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-blue-500",
                       isHovered &&
                         "after:absolute after:left-0 after:top-0 after:h-full after:w-1 after:bg-blue-500 after:shadow-[0_0_8px_rgba(59,130,246,0.5)]",

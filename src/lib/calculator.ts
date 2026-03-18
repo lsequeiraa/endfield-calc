@@ -7,6 +7,7 @@ import type {
   FacilityId,
   ProductionNode,
   DetectedCycle,
+  InvalidCycleInfo,
   ProductionDependencyGraph,
   ProductionGraphNode,
 } from "@/types";
@@ -94,6 +95,8 @@ type CondensedNode =
 type FlowData = {
   itemDemands: Map<ItemId, number>;
   recipeFacilityCounts: Map<RecipeId, number>;
+  /** SCC IDs that were resolved by feeder extension (no longer true cycles) */
+  resolvedSCCIds: Set<string>;
 };
 
 type RecipeChoice = {
@@ -463,9 +466,11 @@ function calculateFlows(
   condensedOrder: CondensedNode[],
   targetRates: Map<ItemId, number>,
   maps: ProductionMaps,
+  recipeOverrides?: Map<ItemId, RecipeId>,
 ): { flowData: FlowData; invalidSCCs: InvalidSCCInfo[] } {
   const itemDemands = new Map<ItemId, number>();
   const recipeFacilityCounts = new Map<RecipeId, number>();
+  const resolvedSCCIds = new Set<string>();
   const invalidSCCs: InvalidSCCInfo[] = [];
 
   targetRates.forEach((rate, itemId) => {
@@ -487,6 +492,8 @@ function calculateFlows(
         itemDemands,
         recipeFacilityCounts,
         maps,
+        recipeOverrides,
+        resolvedSCCIds,
       );
 
       if (!solved) {
@@ -540,7 +547,7 @@ function calculateFlows(
     }
   });
 
-  return { flowData: { itemDemands, recipeFacilityCounts }, invalidSCCs };
+  return { flowData: { itemDemands, recipeFacilityCounts, resolvedSCCIds }, invalidSCCs };
 }
 
 function solveSCCFlow(
@@ -549,6 +556,8 @@ function solveSCCFlow(
   itemDemands: Map<ItemId, number>,
   recipeFacilityCounts: Map<RecipeId, number>,
   maps: ProductionMaps,
+  recipeOverrides?: Map<ItemId, RecipeId>,
+  resolvedSCCIds?: Set<string>,
 ): boolean {
   console.log(`[SCC_SOLVE] Solving flow for SCC: ${scc.id}`);
 
@@ -639,7 +648,10 @@ function solveSCCFlow(
   // Early exit if no demand at all (neither internal nor external output)
   if (externalDemands.size === 0 && !hasExternalOutputDemand) {
     console.log(`  [SCC_SOLVE] No external demand, this is an invalid cycle`);
-    return false;
+    // Try feeder extension before giving up
+    return tryExtendSCCWithFeeders(
+      scc, graph, itemDemands, recipeFacilityCounts, maps, recipeOverrides, resolvedSCCIds,
+    );
   }
 
   console.log(
@@ -751,7 +763,9 @@ function solveSCCFlow(
       console.warn(
         `  [SCC_SOLVE] Cannot solve reduced SCC ${scc.id} - system has no solution`,
       );
-      return false;
+      return tryExtendSCCWithFeeders(
+        scc, graph, itemDemands, recipeFacilityCounts, maps, recipeOverrides, resolvedSCCIds,
+      );
     }
 
     // Assemble full facility counts
@@ -805,7 +819,9 @@ function solveSCCFlow(
       console.warn(
         `  [SCC_SOLVE] Cannot solve SCC ${scc.id} - system has no solution`,
       );
-      return false;
+      return tryExtendSCCWithFeeders(
+        scc, graph, itemDemands, recipeFacilityCounts, maps, recipeOverrides, resolvedSCCIds,
+      );
     }
 
     console.log(`  Solution found:`);
@@ -884,6 +900,403 @@ function solveSCCFlow(
       );
     }
   });
+
+  return true;
+}
+
+/**
+ * Attempts to extend an unsolvable SCC by adding "feeder" recipes — alternative
+ * recipes for overridden items that provide an external supply path.
+ *
+ * When a recipe override creates a closed cycle with zero net output (e.g.,
+ * Iron Powder → Iron Nugget while Iron Nugget → Iron Powder), the linear system
+ * is inconsistent. By adding the default recipe (e.g., Iron Ore → Iron Nugget)
+ * into the SCC, the system becomes underdetermined and solvable, allowing the
+ * override recipe to be used with an external supply chain feeding it.
+ *
+ * Returns true if the SCC was extended and successfully re-solved.
+ */
+function tryExtendSCCWithFeeders(
+  scc: SCCInfo,
+  graph: BipartiteGraph,
+  itemDemands: Map<ItemId, number>,
+  recipeFacilityCounts: Map<RecipeId, number>,
+  maps: ProductionMaps,
+  recipeOverrides?: Map<ItemId, RecipeId>,
+  resolvedSCCIds?: Set<string>,
+): boolean {
+  if (!recipeOverrides || recipeOverrides.size === 0) return false;
+
+  // Find SCC items that have a user recipe override AND have alternative
+  // recipes not already in the SCC.
+  const feedersAdded: {
+    feederRecipe: Recipe;
+    overrideRecipeId: RecipeId;
+    overrideDemand: number;
+  }[] = [];
+
+  for (const itemId of scc.items) {
+    if (!recipeOverrides.has(itemId)) continue;
+
+    const overrideRecipeId = recipeOverrides.get(itemId)!;
+    if (!scc.recipes.has(overrideRecipeId)) continue;
+
+    // Find alternative recipes that produce this item and are NOT in the SCC
+    const alternatives = Array.from(maps.recipeMap.values()).filter(
+      (r) =>
+        r.id !== overrideRecipeId &&
+        !scc.recipes.has(r.id) &&
+        r.outputs.some((o) => o.itemId === itemId) &&
+        // Must have at least one input that is NOT internal to the SCC
+        // (otherwise it doesn't provide external supply)
+        r.inputs.some((inp) => !scc.items.has(inp.itemId)),
+    );
+
+    if (alternatives.length === 0) continue;
+
+    // Pick the best alternative using selectRecipe heuristic (avoids cycles)
+    const feeder = selectRecipe(alternatives, scc.items);
+
+    // Determine the demand for pinning the override recipe.
+    // This is the external demand on the overridden item specifically —
+    // it may be 0 if the target is a different SCC item.
+    let overrideDemand = 0;
+    if (graph.targets.has(itemId)) {
+      overrideDemand += itemDemands.get(itemId) || 0;
+    }
+    // Also include demand from external consumers
+    const consumers = graph.itemConsumedBy.get(itemId);
+    if (consumers) {
+      consumers.forEach((rid) => {
+        if (!scc.recipes.has(rid)) {
+          const fc = recipeFacilityCounts.get(rid) || 0;
+          const recipe = maps.recipeMap.get(rid)!;
+          const input = recipe.inputs.find((i) => i.itemId === itemId);
+          if (input) {
+            overrideDemand +=
+              calcRate(input.amount, recipe.craftingTime) * fc;
+          }
+        }
+      });
+    }
+
+    feedersAdded.push({
+      feederRecipe: feeder,
+      overrideRecipeId,
+      overrideDemand,
+    });
+  }
+
+  if (feedersAdded.length === 0) return false;
+
+  // --- Add feeder recipes to the bipartite graph and extend the SCC ---
+  for (const { feederRecipe } of feedersAdded) {
+    const facility = maps.facilityMap.get(feederRecipe.facilityId);
+    if (!facility) continue;
+
+    // Add recipe node to bipartite graph
+    if (!graph.recipeNodes.has(feederRecipe.id)) {
+      graph.recipeNodes.set(feederRecipe.id, {
+        recipeId: feederRecipe.id,
+        recipe: feederRecipe,
+        facility,
+      });
+      graph.recipeInputs.set(feederRecipe.id, new Set());
+      graph.recipeOutputs.set(feederRecipe.id, new Set());
+    }
+
+    // Add output edges
+    for (const out of feederRecipe.outputs) {
+      graph.recipeOutputs.get(feederRecipe.id)!.add(out.itemId);
+      if (!graph.itemNodes.has(out.itemId)) {
+        const outItem = maps.itemMap.get(out.itemId);
+        if (outItem) {
+          graph.itemNodes.set(out.itemId, {
+            itemId: out.itemId,
+            item: outItem,
+            isRawMaterial: false,
+          });
+        }
+      }
+    }
+
+    // Add input edges and traverse feeder's dependencies
+    for (const inp of feederRecipe.inputs) {
+      graph.recipeInputs.get(feederRecipe.id)!.add(inp.itemId);
+      if (!graph.itemConsumedBy.has(inp.itemId)) {
+        graph.itemConsumedBy.set(inp.itemId, new Set());
+      }
+      graph.itemConsumedBy.get(inp.itemId)!.add(feederRecipe.id);
+
+      // Ensure input item exists in the graph
+      if (!graph.itemNodes.has(inp.itemId)) {
+        const inpItem = maps.itemMap.get(inp.itemId);
+        if (inpItem) {
+          const isRaw =
+            forcedRawMaterials.has(inp.itemId);
+          graph.itemNodes.set(inp.itemId, {
+            itemId: inp.itemId,
+            item: inpItem,
+            isRawMaterial: isRaw,
+          });
+          if (isRaw) graph.rawMaterials.add(inp.itemId);
+        }
+      }
+
+      // Track as external input to the SCC if not an SCC-internal item
+      if (!scc.items.has(inp.itemId)) {
+        scc.externalInputs.add(inp.itemId);
+      }
+    }
+
+    // Add feeder to the SCC's recipe set
+    scc.recipes.add(feederRecipe.id);
+
+    console.log(
+      `  [SCC_EXTEND] Added feeder recipe ${feederRecipe.id} to SCC ${scc.id}`,
+    );
+  }
+
+  // --- Rebuild and solve the extended linear system ---
+  // Rebuild both lists from the (potentially modified) SCC sets so that any
+  // new items or recipes introduced by feeder additions are included.
+  const extItemsList = Array.from(scc.items);
+  const extRecipesList = Array.from(scc.recipes).map(
+    (rid) => maps.recipeMap.get(rid)!,
+  );
+  const n = extItemsList.length;
+  const m = extRecipesList.length;
+
+  // Recompute external demands (same as Phase 1)
+  const externalDemands = new Map<ItemId, number>();
+  for (const itemId of scc.items) {
+    let demand = 0;
+    const consumers = graph.itemConsumedBy.get(itemId);
+    if (consumers) {
+      consumers.forEach((recipeId) => {
+        if (!scc.recipes.has(recipeId)) {
+          const fc = recipeFacilityCounts.get(recipeId) || 0;
+          const recipe = maps.recipeMap.get(recipeId)!;
+          const input = recipe.inputs.find((i) => i.itemId === itemId);
+          if (input) {
+            demand += calcRate(input.amount, recipe.craftingTime) * fc;
+          }
+        }
+      });
+    }
+    if (graph.targets.has(itemId)) {
+      demand += itemDemands.get(itemId) || 0;
+    }
+    if (demand > 0) externalDemands.set(itemId, demand);
+  }
+
+  // Pin override recipes to their demand
+  const pinnedRecipes = new Map<number, number>();
+  for (const { overrideRecipeId, overrideDemand } of feedersAdded) {
+    const overrideIdx = extRecipesList.findIndex(
+      (r) => r.id === overrideRecipeId,
+    );
+    if (overrideIdx === -1) continue;
+
+    // Pin the override recipe to satisfy its output demand
+    const overrideRecipe = extRecipesList[overrideIdx];
+    const outputItem = overrideRecipe.outputs.find((o) =>
+      scc.items.has(o.itemId),
+    );
+    if (!outputItem) continue;
+
+    const rate = calcRate(outputItem.amount, overrideRecipe.craftingTime);
+    if (rate > 0) {
+      pinnedRecipes.set(overrideIdx, overrideDemand / rate);
+      console.log(
+        `  [SCC_EXTEND] Pinning override recipe ${overrideRecipe.id} (index ${overrideIdx}) to ${(overrideDemand / rate).toFixed(4)} facilities`,
+      );
+    }
+  }
+
+  if (pinnedRecipes.size === 0) return false;
+
+  // Build reduced system (same approach as Path A in solveSCCFlow)
+  const freeIndices = Array.from({ length: m }, (_, i) => i).filter(
+    (i) => !pinnedRecipes.has(i),
+  );
+  const freeM = freeIndices.length;
+
+  console.log(
+    `  [SCC_EXTEND] Solving extended system: ${n} items × ${freeM} free recipes (${pinnedRecipes.size} pinned, ${m} total)`,
+  );
+
+  const matrix: number[][] = [];
+  const constants: number[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const itemId = extItemsList[i];
+    const row = new Array(freeM).fill(0);
+    let rhs = externalDemands.get(itemId) || 0;
+
+    for (let j = 0; j < m; j++) {
+      const recipe = extRecipesList[j];
+      const output =
+        recipe.outputs.find((o) => o.itemId === itemId)?.amount || 0;
+      const input =
+        recipe.inputs.find((inp) => inp.itemId === itemId)?.amount || 0;
+      const coeff =
+        calcRate(output, recipe.craftingTime) -
+        calcRate(input, recipe.craftingTime);
+
+      if (pinnedRecipes.has(j)) {
+        rhs -= coeff * pinnedRecipes.get(j)!;
+      } else {
+        const freeIdx = freeIndices.indexOf(j);
+        row[freeIdx] = coeff;
+      }
+    }
+
+    matrix.push(row);
+    constants.push(rhs);
+  }
+
+  // Solve the reduced system
+  let freeSolution: number[] | null;
+  if (freeM === 0) {
+    freeSolution = [];
+  } else if (n > freeM) {
+    // Overdetermined after pinning
+    if (freeM === 1) {
+      let maxR = 0;
+      for (let i = 0; i < n; i++) {
+        const a = matrix[i][0];
+        const b = constants[i];
+        if (Math.abs(a) > 1e-9) {
+          const r = b / a;
+          if (r > maxR) maxR = r;
+        }
+      }
+      freeSolution = [maxR];
+    } else {
+      const subMatrix = matrix.slice(0, freeM);
+      const subConstants = constants.slice(0, freeM);
+      freeSolution = solveLinearSystem(subMatrix, subConstants);
+    }
+  } else {
+    freeSolution = solveLinearSystem(matrix, constants);
+  }
+
+  if (!freeSolution) {
+    console.warn(
+      `  [SCC_EXTEND] Extended system still has no solution for SCC ${scc.id}`,
+    );
+    return false;
+  }
+
+  // Assemble full facility counts
+  console.log(`  [SCC_EXTEND] Solution found:`);
+  for (let j = 0; j < m; j++) {
+    let facilityCount: number;
+    if (pinnedRecipes.has(j)) {
+      facilityCount = pinnedRecipes.get(j)!;
+    } else {
+      const freeIdx = freeIndices.indexOf(j);
+      facilityCount = Math.max(0, freeSolution[freeIdx]);
+    }
+    recipeFacilityCounts.set(extRecipesList[j].id, facilityCount);
+    console.log(
+      `    Recipe ${extRecipesList[j].id}: ${facilityCount.toFixed(4)} facilities${pinnedRecipes.has(j) ? " (pinned)" : ""}`,
+    );
+  }
+
+  // --- Phase 4: Compute deficits (same as solveSCCFlow) ---
+  for (let i = 0; i < n; i++) {
+    const itemId = extItemsList[i];
+    let netProduction = 0;
+
+    for (let j = 0; j < m; j++) {
+      const recipe = extRecipesList[j];
+      const facilityCount = recipeFacilityCounts.get(recipe.id) || 0;
+      const output =
+        recipe.outputs.find((o) => o.itemId === itemId)?.amount || 0;
+      const input =
+        recipe.inputs.find((inp) => inp.itemId === itemId)?.amount || 0;
+      netProduction +=
+        (calcRate(output, recipe.craftingTime) -
+          calcRate(input, recipe.craftingTime)) *
+        facilityCount;
+    }
+
+    const externalDemand = externalDemands.get(itemId) || 0;
+    const deficit = externalDemand - netProduction;
+
+    if (deficit > 1e-9) {
+      itemDemands.set(
+        itemId,
+        Math.max(itemDemands.get(itemId) || 0, deficit),
+      );
+      console.log(
+        `  [SCC_EXTEND] Item ${itemId} has deficit of ${deficit.toFixed(4)}/min — propagated`,
+      );
+    }
+  }
+
+  // --- Check: did the extension actually resolve the target demand? ---
+  // If a target item in the SCC still has an unresolved deficit, the extended
+  // system couldn't produce the demanded output (e.g., the override recipe
+  // works against the target by dismantling the item we're trying to produce).
+  // Return false so the SCC is marked invalid and a warning is shown.
+  for (let i = 0; i < n; i++) {
+    const itemId = extItemsList[i];
+    if (!graph.targets.has(itemId)) continue;
+
+    let targetNetProduction = 0;
+    for (let j = 0; j < m; j++) {
+      const recipe = extRecipesList[j];
+      const facilityCount = recipeFacilityCounts.get(recipe.id) || 0;
+      const output =
+        recipe.outputs.find((o) => o.itemId === itemId)?.amount || 0;
+      const input =
+        recipe.inputs.find((inp) => inp.itemId === itemId)?.amount || 0;
+      targetNetProduction +=
+        (calcRate(output, recipe.craftingTime) -
+          calcRate(input, recipe.craftingTime)) *
+        facilityCount;
+    }
+
+    const externalDemand = externalDemands.get(itemId) || 0;
+    if (externalDemand - targetNetProduction > 1e-9) {
+      console.warn(
+        `  [SCC_EXTEND] Target ${itemId} has unresolved deficit of ${(externalDemand - targetNetProduction).toFixed(4)}/min — extension failed`,
+      );
+      return false;
+    }
+  }
+
+  // --- Phase 5: Propagate demands to external inputs ---
+  scc.externalInputs.forEach((inputItemId) => {
+    let totalConsumption = 0;
+    scc.recipes.forEach((recipeId) => {
+      const recipe = maps.recipeMap.get(recipeId)!;
+      const facilityCount = recipeFacilityCounts.get(recipeId) || 0;
+      const input = recipe.inputs.find((i) => i.itemId === inputItemId);
+      if (input) {
+        totalConsumption +=
+          calcRate(input.amount, recipe.craftingTime) * facilityCount;
+      }
+    });
+
+    if (totalConsumption > 0) {
+      itemDemands.set(
+        inputItemId,
+        (itemDemands.get(inputItemId) || 0) + totalConsumption,
+      );
+      console.log(
+        `  [SCC_EXTEND] External input ${inputItemId} demand: ${totalConsumption.toFixed(4)}/min`,
+      );
+    }
+  });
+
+  // Mark this SCC as resolved by feeder extension so it is excluded from
+  // detectedCycles (the cycle has been linearised and should not be rendered
+  // with backward edges in the visualization).
+  resolvedSCCIds?.add(scc.id);
 
   return true;
 }
@@ -998,6 +1411,8 @@ function buildProductionGraph(
   flowData: FlowData,
   sccs: SCCInfo[],
   maps: ProductionMaps,
+  invalidSCCs: InvalidSCCInfo[] = [],
+  recipeOverrides?: Map<ItemId, RecipeId>,
 ): ProductionDependencyGraph {
   const nodes = new Map<string, ProductionGraphNode>();
   const edges: Array<{ from: string; to: string }> = [];
@@ -1061,8 +1476,12 @@ function buildProductionGraph(
     });
   });
 
-  // Build cycle info
-  const detectedCycles: DetectedCycle[] = sccs.map((scc) => {
+  // Build cycle info — exclude SCCs that were resolved by feeder extension
+  // since they are now linear chains, not true production cycles.
+  const activeSCCs = sccs.filter(
+    (scc) => !flowData.resolvedSCCIds.has(scc.id),
+  );
+  const detectedCycles: DetectedCycle[] = activeSCCs.map((scc) => {
     const cycleNodes: ProductionNode[] = Array.from(scc.recipes).flatMap(
       (recipeId) => {
         const recipeData = graph.recipeNodes.get(recipeId)!;
@@ -1093,11 +1512,25 @@ function buildProductionGraph(
     };
   });
 
+  // Build invalid cycle info from unresolved SCCs
+  const invalidCycles: InvalidCycleInfo[] = invalidSCCs.map((info) => ({
+    cycleId: info.sccId,
+    involvedItemIds: Array.from(info.involvedItems),
+    involvedRecipeIds: Array.from(
+      sccs.find((s) => s.id === info.sccId)?.recipes ?? [],
+    ),
+    reason: info.reason,
+    overriddenItemIds: Array.from(info.involvedItems).filter(
+      (itemId) => recipeOverrides?.has(itemId) ?? false,
+    ),
+  }));
+
   return {
     nodes,
     edges,
     targets: graph.targets,
     detectedCycles,
+    invalidCycles,
   };
 }
 
@@ -1214,6 +1647,7 @@ export function calculateProductionPlan(
       condensedOrder,
       targetRatesMap,
       maps,
+      recipeOverrides,
     );
 
     if (invalidSCCs.length === 0) {
@@ -1222,7 +1656,14 @@ export function calculateProductionPlan(
         `[SUCCESS] Valid production plan found in ${iteration} iteration(s)`,
       );
       injectDisposalRecipes(graph, flowData, maps, targets);
-      return buildProductionGraph(graph, flowData, sccs, maps);
+      return buildProductionGraph(
+        graph,
+        flowData,
+        sccs,
+        maps,
+        [],
+        recipeOverrides,
+      );
     }
 
     // Try to backtrack
@@ -1243,7 +1684,14 @@ export function calculateProductionPlan(
           `Returning best-effort result with ${invalidSCCs.length} invalid cycle(s).`,
       );
       injectDisposalRecipes(graph, flowData, maps, targets);
-      return buildProductionGraph(graph, flowData, sccs, maps);
+      return buildProductionGraph(
+        graph,
+        flowData,
+        sccs,
+        maps,
+        invalidSCCs,
+        recipeOverrides,
+      );
     }
 
     recipeConstraints = newConstraints;

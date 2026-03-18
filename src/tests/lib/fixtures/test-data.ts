@@ -77,6 +77,35 @@ export const mockFacilities: Facility[] = [
   { id: FacilityId.ITEM_PORT_XIRANITE_OVEN_1, powerConsumption: 50, tier: 4 },
 ];
 
+// Recipes that include both multi-recipe options AND the grinder, enabling
+// the cycle: Iron Nugget <-> Iron Powder when override is applied.
+export const overrideCycleRecipes: Recipe[] = [
+  // Iron nugget from ore (default)
+  {
+    id: RecipeId.FURNANCE_IRON_NUGGET_1,
+    inputs: [{ itemId: ItemId.ITEM_IRON_ORE, amount: 1 }],
+    outputs: [{ itemId: ItemId.ITEM_IRON_NUGGET, amount: 1 }],
+    facilityId: FacilityId.ITEM_PORT_FURNANCE_1,
+    craftingTime: 2,
+  },
+  // Iron nugget from powder (alternative — creates cycle when overridden)
+  {
+    id: RecipeId.FURNANCE_IRON_NUGGET_2,
+    inputs: [{ itemId: ItemId.ITEM_IRON_POWDER, amount: 1 }],
+    outputs: [{ itemId: ItemId.ITEM_IRON_NUGGET, amount: 1 }],
+    facilityId: FacilityId.ITEM_PORT_FURNANCE_1,
+    craftingTime: 2,
+  },
+  // Iron nugget -> Iron powder (only recipe for powder — completes the cycle)
+  {
+    id: RecipeId.GRINDER_IRON_POWDER_1,
+    inputs: [{ itemId: ItemId.ITEM_IRON_NUGGET, amount: 1 }],
+    outputs: [{ itemId: ItemId.ITEM_IRON_POWDER, amount: 1 }],
+    facilityId: FacilityId.ITEM_PORT_GRINDER_1,
+    craftingTime: 2,
+  },
+];
+
 // Simple linear recipes (no cycles)
 export const simpleRecipes: Recipe[] = [
   // Iron ore -> Iron nugget (30/min per facility)

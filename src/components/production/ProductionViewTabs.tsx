@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useState } from "react";
-import { BarChart3, Network } from "lucide-react";
+import { AlertTriangle, BarChart3, Network } from "lucide-react";
 import ProductionTable from "./ProductionTable";
 import ProductionDependencyTree from "../flow/ProductionDependencyTree";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -30,6 +30,7 @@ interface ProductionViewTabsProps {
   targetRates?: Map<ItemId, number>;
   ceilMode: boolean;
   onCeilModeChange: (value: boolean) => void;
+  warnings: string[];
 }
 
 export default function ProductionViewTabs({
@@ -44,6 +45,7 @@ export default function ProductionViewTabs({
   targetRates,
   ceilMode,
   onCeilModeChange,
+  warnings,
 }: ProductionViewTabsProps) {
   const { t } = useTranslation("app");
   const [visualizationMode, setVisualizationMode] =
@@ -129,6 +131,19 @@ export default function ProductionViewTabs({
         <CardContent className="flex-1 min-h-0 overflow-hidden p-0">
           <Tabs value={activeTab} className="h-full">
             <TabsContent value="table" className="h-full m-0 p-4 pt-0">
+              {warnings.length > 0 && (
+                <div className="space-y-1.5 pb-3">
+                  {warnings.map((msg, i) => (
+                    <div
+                      key={i}
+                      className="flex items-start gap-2 text-amber-600 dark:text-amber-400 text-xs p-2.5 bg-amber-500/10 rounded"
+                    >
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                      <span>{msg}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="h-full overflow-auto">
                 <ProductionTable
                   data={tableData}

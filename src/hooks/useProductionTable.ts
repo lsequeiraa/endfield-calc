@@ -26,6 +26,7 @@ type MergedItemNode = {
  */
 function mergeItemNodes(
   plan: ProductionDependencyGraph,
+  recipeOverrides: Map<ItemId, RecipeId>,
 ): Map<ItemId, MergedItemNode> {
   const merged = new Map<ItemId, MergedItemNode>();
 
@@ -39,15 +40,29 @@ function mergeItemNodes(
       existing.totalProductionRate += node.productionRate;
       if (node.isTarget) existing.isTarget = true;
     } else {
-      // Find producer recipe
-      const producerRecipeId =
-        Array.from(plan.nodes.values()).find(
-          (n): n is Extract<ProductionGraphNode, { type: "recipe" }> =>
-            n.type === "recipe" &&
-            plan.edges.some(
-              (e) => e.from === n.recipeId && e.to === node.itemId,
-            ),
-        )?.recipeId || null;
+      // Find producer recipe. When an item has multiple producers (e.g.,
+      // override recipe + feeder recipe), prefer the user's override.
+      const overrideId = recipeOverrides.get(node.itemId);
+      let producerRecipeId: RecipeId | null = null;
+
+      if (
+        overrideId &&
+        plan.nodes.has(overrideId) &&
+        plan.edges.some(
+          (e) => e.from === overrideId && e.to === node.itemId,
+        )
+      ) {
+        producerRecipeId = overrideId;
+      } else {
+        producerRecipeId =
+          Array.from(plan.nodes.values()).find(
+            (n): n is Extract<ProductionGraphNode, { type: "recipe" }> =>
+              n.type === "recipe" &&
+              plan.edges.some(
+                (e) => e.from === n.recipeId && e.to === node.itemId,
+              ),
+          )?.recipeId || null;
+      }
 
       const facilityCount = producerRecipeId
         ? (
@@ -153,13 +168,14 @@ export function useProductionTable(
   recipes: Recipe[],
   recipeOverrides: Map<ItemId, RecipeId>,
   manualRawMaterials: Set<ItemId>,
+  invalidCycleItemIds: Set<ItemId> = new Set(),
 ): ProductionLineData[] {
   return useMemo(() => {
     if (!plan || plan.nodes.size === 0) {
       return [];
     }
 
-    const mergedNodes = mergeItemNodes(plan);
+    const mergedNodes = mergeItemNodes(plan, recipeOverrides);
     calculateLevels(mergedNodes);
     const sortedNodes = sortNodes(mergedNodes, plan);
 
@@ -196,6 +212,7 @@ export function useProductionTable(
         isRawMaterial: node.isRawMaterial,
         isTarget: node.isTarget,
         isManualRawMaterial: manualRawMaterials.has(node.itemId),
+        isInvalidCycle: invalidCycleItemIds.has(node.itemId),
         directDependencyItemIds: node.dependencies,
       };
     });
@@ -230,5 +247,5 @@ export function useProductionTable(
     });
 
     return [...itemRows, ...disposalRows];
-  }, [plan, recipes, recipeOverrides, manualRawMaterials]);
+  }, [plan, recipes, recipeOverrides, manualRawMaterials, invalidCycleItemIds]);
 }
