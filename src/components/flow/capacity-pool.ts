@@ -133,6 +133,7 @@ export class CapacityPoolManager {
     nodeKey: string,
     demandRate: number,
     conversionRatio: number,
+    demandedItemId: string,
   ): AllocationResult[] {
     const pool = this.pools.get(nodeKey);
     if (!pool) return [];
@@ -154,8 +155,10 @@ export class CapacityPoolManager {
       // Total byproduct this facility produces when running
       const totalByproduct = facility.actualOutputRate * conversionRatio;
 
-      // Subtract byproduct already allocated from this facility
-      const trackingKey = `${facility.facilityId}:${nodeKey}`;
+      // Subtract byproduct already allocated from this facility for this item.
+      // Keyed by item ID (not recipe) so different byproducts from the same
+      // recipe are tracked independently.
+      const trackingKey = `${facility.facilityId}:${demandedItemId}`;
       const alreadyAllocated = this.byproductAllocated.get(trackingKey) || 0;
       const available = totalByproduct - alreadyAllocated;
 

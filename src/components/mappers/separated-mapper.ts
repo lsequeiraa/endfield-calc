@@ -212,8 +212,6 @@ export function mapPlanToFlowSeparated(
     if (!itemNode) return;
 
     // Find ALL producer recipes with their production rates.
-    // For multi-producer items (e.g., liquid_sewage from both the SCC cycle
-    // and the furnace), demand is split proportionally across producers.
     const producers = getItemProducers(plan, itemId);
 
     if (producers.length === 0) {
@@ -223,23 +221,29 @@ export function mapPlanToFlowSeparated(
       return;
     }
 
-    const totalProduction = producers.reduce((sum, p) => sum + p.rate, 0);
+    // Greedy cascade: fill demand from one producer before moving to the next.
+    // This produces whole-facility assignments and minimizes pipe connections,
+    // unlike proportional split which sends fractional amounts to every producer.
+    // Sort by rate descending so large producers are assigned first.
+    const sorted = [...producers].sort((a, b) => b.rate - a.rate);
 
-    for (const producer of producers) {
-      const proportionalDemand =
-        totalProduction > 0
-          ? demandRate * (producer.rate / totalProduction)
-          : demandRate / producers.length;
+    let remainingDemand = demandRate;
+
+    for (const producer of sorted) {
+      if (remainingDemand <= 0.001) break;
 
       const isBackward = isInSameCycle(producer.recipeId, consumerFacilityId);
+      const toAllocate = Math.min(remainingDemand, producer.rate);
 
       allocateFromPool(
         producer.recipeId,
-        proportionalDemand,
+        toAllocate,
         consumerFacilityId,
         isBackward ? "backward" : undefined,
         itemId,
       );
+
+      remainingDemand -= toAllocate;
     }
   }
 
@@ -307,11 +311,12 @@ export function mapPlanToFlowSeparated(
     // activate new facility instances if needed.
     let allocations: { sourceNodeId: string; allocatedAmount: number; fromFacilityIndex: number }[];
 
-    if (isByproductDemand) {
+    if (isByproductDemand && demandedItemId) {
       allocations = poolManager.allocateByproduct(
         recipeId,
         poolDemandRate,
         conversionRatio,
+        demandedItemId,
       );
 
       // Check if byproduct allocation fully satisfied the demand

@@ -18,7 +18,7 @@ import {
 } from "../flow/flow-utils";
 import { createTargetSinkId, createRawMaterialId } from "@/lib/node-keys";
 import { calcRate } from "@/lib/utils";
-import { getRecipeOutputItemId, getRecipeInputItemId, getItemProducers, isRecipeTerminal } from "@/lib/plan-helpers";
+import { getRecipeOutputItemId, getRecipeInputItemId, getItemProducers, isRecipeTerminal, computeGreedyAllocation } from "@/lib/plan-helpers";
 
 /**
  * Maps a ProductionDependencyGraph to React Flow nodes and edges in merged mode.
@@ -87,6 +87,76 @@ export function mapPlanToFlowMerged(
     }
   });
 
+  // Pre-compute greedy allocation for multi-producer items.
+  // Instead of splitting each producer proportionally across all consumers,
+  // assigns whole producer outputs to consumers first, minimizing pipe connections.
+  // Only applies to items with 2+ non-disposal producers.
+  type GreedyResult = {
+    consumerEdges: { producerRecipeId: string; consumerId: string; rate: number }[];
+    remainingByProducer: Map<string, number>;
+  };
+  const greedyAllocations = new Map<string, GreedyResult>();
+
+  {
+    // Collect all non-disposal consumers per item
+    const itemConsumers = new Map<string, { consumerId: string; demand: number }[]>();
+
+    plan.edges.forEach((edge) => {
+      const source = plan.nodes.get(edge.from);
+      const target = plan.nodes.get(edge.to);
+      if (
+        source?.type === "item" &&
+        target?.type === "recipe" &&
+        !target.isDisposal
+      ) {
+        const inputAmount =
+          target.recipe.inputs.find((i) => i.itemId === source.itemId)
+            ?.amount || 0;
+        const demand =
+          calcRate(inputAmount, target.recipe.craftingTime) *
+          target.facilityCount;
+        if (!itemConsumers.has(edge.from))
+          itemConsumers.set(edge.from, []);
+        itemConsumers.get(edge.from)!.push({
+          consumerId: edge.to,
+          demand,
+        });
+      }
+    });
+
+    // Also collect target sink consumers for multi-producer target items
+    plan.nodes.forEach((node, nodeId) => {
+      if (node.type !== "item" || !node.isTarget || node.isRawMaterial) return;
+      const producers = getItemProducers(plan, nodeId);
+      if (producers.length <= 1) return;
+
+      const isTerminalTarget = !upstreamItemIds.has(nodeId);
+      const anyHasFlowNode = producers.some((p) =>
+        flowNodes.some((n) => n.id === p.recipeId),
+      );
+      if (!isTerminalTarget || anyHasFlowNode) {
+        const targetSinkId = createTargetSinkId(node.itemId);
+        const userTargetRate =
+          targetRates?.get(node.itemId) ?? node.productionRate;
+        if (!itemConsumers.has(nodeId)) itemConsumers.set(nodeId, []);
+        itemConsumers.get(nodeId)!.push({
+          consumerId: targetSinkId,
+          demand: userTargetRate,
+        });
+      }
+    });
+
+    // Run greedy allocation for multi-producer items
+    itemConsumers.forEach((consumers, itemId) => {
+      const producers = getItemProducers(plan, itemId);
+      if (producers.length <= 1) return;
+      greedyAllocations.set(
+        itemId,
+        computeGreedyAllocation(producers, consumers),
+      );
+    });
+  }
+
   // Create edges: Recipe → Item → Recipe
   plan.edges.forEach((edge) => {
     const sourceNode = plan.nodes.get(edge.from);
@@ -130,28 +200,38 @@ export function mapPlanToFlowMerged(
         calcRate(inputAmount, targetNode.recipe.craftingTime) *
         targetNode.facilityCount;
 
-      if (producers.length > 0) {
-        // Split flow across all producers proportionally
-        const totalProduction = producers.reduce((sum, p) => sum + p.rate, 0);
+      const greedy = greedyAllocations.get(edge.from);
 
-        for (const producer of producers) {
-          const edgeFlowRate =
-            totalProduction > 0
-              ? totalFlowRate * (producer.rate / totalProduction)
-              : totalFlowRate / producers.length;
-
+      if (greedy) {
+        // Multi-producer: use pre-computed greedy allocation
+        for (const ae of greedy.consumerEdges) {
+          if (ae.consumerId !== edge.to) continue;
+          if (ae.rate <= 0.001) continue;
           flowEdges.push(
             createEdge(
               `e${edgeIdCounter++}`,
-              producer.recipeId,
+              ae.producerRecipeId,
               flowTargetId,
-              edgeFlowRate,
+              ae.rate,
               sourceNode.item,
               undefined,
               ceilMode,
             ),
           );
         }
+      } else if (producers.length > 0) {
+        // Single producer: direct edge at full rate
+        flowEdges.push(
+          createEdge(
+            `e${edgeIdCounter++}`,
+            producers[0].recipeId,
+            flowTargetId,
+            totalFlowRate,
+            sourceNode.item,
+            undefined,
+            ceilMode,
+          ),
+        );
       } else if (sourceNode.isRawMaterial) {
         // Raw material → Recipe: create node for raw material
         const rawMaterialNodeId = createRawMaterialId(sourceNode.itemId);
@@ -244,15 +324,26 @@ export function mapPlanToFlowMerged(
       // - Also for terminal targets when the recipe already has a production node
       //   (byproduct scenario: recipe serves a primary output elsewhere)
       if (producers.length > 0 && (!isTerminalTarget || anyProducerHasFlowNode)) {
-        const totalProduction = producers.reduce((sum, p) => sum + p.rate, 0);
+        const greedy = greedyAllocations.get(nodeId);
 
-        for (const producer of producers) {
-          const edgeRate =
-            totalProduction > 0
-              ? userTargetRate * (producer.rate / totalProduction)
-              : userTargetRate / producers.length;
+        // Determine which producers contribute and how much
+        const edgesToCreate: { producerRecipeId: string; rate: number }[] = [];
 
-          const producerNode = plan.nodes.get(producer.recipeId);
+        if (greedy) {
+          // Multi-producer: use pre-computed greedy allocation
+          for (const ae of greedy.consumerEdges) {
+            if (ae.consumerId !== targetNodeId) continue;
+            if (ae.rate > 0.001) {
+              edgesToCreate.push({ producerRecipeId: ae.producerRecipeId, rate: ae.rate });
+            }
+          }
+        } else if (producers.length > 0) {
+          // Single producer: full target rate
+          edgesToCreate.push({ producerRecipeId: producers[0].recipeId, rate: userTargetRate });
+        }
+
+        for (const { producerRecipeId, rate: edgeRate } of edgesToCreate) {
+          const producerNode = plan.nodes.get(producerRecipeId);
           let edgeFacilityCount: number | undefined;
           if (producerNode?.type === "recipe") {
             const outputEntry = producerNode.recipe.outputs.find(
@@ -269,7 +360,7 @@ export function mapPlanToFlowMerged(
           flowEdges.push(
             createEdge(
               `e${edgeIdCounter++}`,
-              producer.recipeId,
+              producerRecipeId,
               targetNodeId,
               edgeRate,
               node.item,
@@ -316,15 +407,24 @@ export function mapPlanToFlowMerged(
       ),
     );
 
-    // Find ALL producer recipes of the consumed item and create edges from each
+    // Create edges from producers with remaining output after consumer allocation
+    const greedy = greedyAllocations.get(consumedItemId);
     const producers = getItemProducers(plan, consumedItemId);
-    const totalProduction = producers.reduce((sum, p) => sum + p.rate, 0);
 
     for (const producer of producers) {
-      const edgeRate =
-        totalProduction > 0
-          ? disposalRate * (producer.rate / totalProduction)
-          : disposalRate;
+      // Use greedy remaining if available, otherwise full proportional split
+      let edgeRate: number;
+      if (greedy) {
+        edgeRate = greedy.remainingByProducer.get(producer.recipeId) || 0;
+      } else {
+        const totalProduction = producers.reduce((sum, p) => sum + p.rate, 0);
+        edgeRate =
+          totalProduction > 0
+            ? disposalRate * (producer.rate / totalProduction)
+            : disposalRate;
+      }
+
+      if (edgeRate <= 0.001) continue;
 
       // Compute how many facilities of this producer contribute
       const producerNode = plan.nodes.get(producer.recipeId);

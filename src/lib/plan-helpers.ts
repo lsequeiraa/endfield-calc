@@ -126,6 +126,64 @@ export function getItemProducers(
 }
 
 /**
+ * Computes a greedy allocation of producer outputs to consumers, minimizing
+ * the number of edges (pipe/belt connections) in the visualization.
+ *
+ * Instead of splitting each producer proportionally across all consumers,
+ * assigns whole producer outputs to consumers first. A producer is only
+ * split across consumers when its output exceeds one consumer's demand or
+ * doesn't fully cover it.
+ *
+ * Producers are sorted by rate (descending) so large producers are assigned
+ * first, maximizing the chance of whole-producer assignments.
+ *
+ * @returns consumerEdges — edges from producers to consumers with allocated rates
+ * @returns remainingByProducer — leftover production per producer (for disposal)
+ */
+export function computeGreedyAllocation(
+  producers: { recipeId: string; rate: number }[],
+  consumers: { consumerId: string; demand: number }[],
+): {
+  consumerEdges: {
+    producerRecipeId: string;
+    consumerId: string;
+    rate: number;
+  }[];
+  remainingByProducer: Map<string, number>;
+} {
+  // Sort producers by rate descending — assign large producers first
+  const sorted = [...producers].sort((a, b) => b.rate - a.rate);
+  const remaining = new Map(sorted.map((p) => [p.recipeId, p.rate]));
+
+  const consumerEdges: {
+    producerRecipeId: string;
+    consumerId: string;
+    rate: number;
+  }[] = [];
+
+  for (const consumer of consumers) {
+    let remainingDemand = consumer.demand;
+    for (const producer of sorted) {
+      if (remainingDemand <= 0.001) break;
+      const available = remaining.get(producer.recipeId) || 0;
+      if (available <= 0.001) continue;
+
+      const allocated = Math.min(available, remainingDemand);
+      remaining.set(producer.recipeId, available - allocated);
+      remainingDemand -= allocated;
+
+      consumerEdges.push({
+        producerRecipeId: producer.recipeId,
+        consumerId: consumer.consumerId,
+        rate: allocated,
+      });
+    }
+  }
+
+  return { consumerEdges, remainingByProducer: remaining };
+}
+
+/**
  * Find the first input item of a recipe node (e.g., for disposal/sink recipes).
  */
 export function getRecipeInputItemId(
