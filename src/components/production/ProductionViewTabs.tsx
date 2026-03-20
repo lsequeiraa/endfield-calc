@@ -156,15 +156,32 @@ export default function ProductionViewTabs({
               </div>
             </TabsContent>
             <TabsContent value="tree" className="h-full m-0">
-              <ProductionDependencyTree
-                plan={plan}
-                items={items}
-                facilities={facilities}
-                visualizationMode={visualizationMode}
-                targetRates={targetRates}
-                twoEndAlignment={twoEndAlignment}
-                ceilMode={ceilMode}
-              />
+              <div className="h-full flex flex-col">
+                {warnings.length > 0 && (
+                  <div className="space-y-1.5 px-4 pb-3">
+                    {warnings.map((msg, i) => (
+                      <div
+                        key={i}
+                        className="flex items-start gap-2 text-amber-600 dark:text-amber-400 text-xs p-2.5 bg-amber-500/10 rounded"
+                      >
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <span>{msg}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex-1 min-h-0">
+                  <ProductionDependencyTree
+                    plan={plan}
+                    items={items}
+                    facilities={facilities}
+                    visualizationMode={visualizationMode}
+                    targetRates={targetRates}
+                    twoEndAlignment={twoEndAlignment}
+                    ceilMode={ceilMode}
+                  />
+                </div>
+              </div>
             </TabsContent>
           </Tabs>
         </CardContent>
