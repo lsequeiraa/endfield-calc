@@ -58,12 +58,24 @@ export function mapPlanToFlowMerged(
       // no secondary outputs feeding into other recipes). Multi-output recipes
       // that participate in cycles must NOT be skipped.
       if (outputItemNode && !isRecipeTerminal(plan, nodeId)) {
+        // Use per-recipe output rate rather than total item production rate.
+        // For single-producer items these are equal; for multi-producer items
+        // (e.g. feeder + override both producing the same item) each visual
+        // node shows only its own contribution.
+        const recipeOutput = node.recipe.outputs.find(
+          (o) => o.itemId === outputItemNode.itemId,
+        );
+        const perRecipeRate = recipeOutput
+          ? calcRate(recipeOutput.amount, node.recipe.craftingTime) *
+            node.facilityCount
+          : outputItemNode.productionRate;
+
         flowNodes.push(
            createProductionFlowNode(
             nodeId,
             {
               item: outputItemNode.item,
-              targetRate: outputItemNode.productionRate,
+              targetRate: perRecipeRate,
               recipe: node.recipe,
               facility: node.facility,
               facilityCount: node.facilityCount,
@@ -139,7 +151,11 @@ export function mapPlanToFlowMerged(
         const userTargetRate =
           targetRates?.get(node.itemId) ?? node.productionRate;
         if (!itemConsumers.has(nodeId)) itemConsumers.set(nodeId, []);
-        itemConsumers.get(nodeId)!.push({
+        // Prepend target sink so greedy allocation assigns the primary
+        // producer (e.g. the user's override recipe) to the target first,
+        // leaving feeder recipes for internal consumers.  This avoids
+        // creating visual cycles when a feeder recipe was added.
+        itemConsumers.get(nodeId)!.unshift({
           consumerId: targetSinkId,
           demand: userTargetRate,
         });

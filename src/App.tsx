@@ -25,6 +25,7 @@ export default function App() {
     tableData,
     stats,
     error,
+    warnings,
     handleTargetChange,
     handleTargetRemove,
     handleBatchAddTargets,
@@ -87,6 +88,7 @@ export default function App() {
               targetRates={targetRates}
               ceilMode={ceilMode}
               onCeilModeChange={setCeilMode}
+              warnings={warnings}
             />
           </div>
 
