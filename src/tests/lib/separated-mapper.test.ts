@@ -54,7 +54,8 @@ function expectAllFacilitiesConnected(result: FlowResult): void {
   );
 
   for (const node of productionNodes) {
-    const isRawMaterial = (node.data as Record<string, unknown>).isRawMaterial;
+    const isRawMaterial = (node.data as { isRawMaterial?: boolean } | undefined)
+      ?.isRawMaterial;
     if (isRawMaterial) continue; // Raw material nodes only have outgoing edges
 
     const out = outgoingEdges(result, node.id);
@@ -213,7 +214,8 @@ describe("Separated mapper — Xircon cycle (bug reproduction)", () => {
     // The total Xircon flow rate into the target should match demand (D=30)
     const targetIncoming = incomingEdges(result, targetSinkId);
     const totalXirconToTarget = targetIncoming.reduce(
-      (sum, e) => sum + ((e.data as Record<string, unknown>)?.flowRate as number ?? 0),
+      (sum, e) =>
+        sum + ((e.data as { flowRate?: number } | undefined)?.flowRate ?? 0),
       0,
     );
 

@@ -343,7 +343,6 @@ export function mapPlanToFlowSeparated(
         allocations = poolManager.allocateByproduct(
           recipeId,
           poolDemandRate,
-          conversionRatio,
           demandedItemId,
           true,
         );
@@ -353,7 +352,6 @@ export function mapPlanToFlowSeparated(
         allocations = poolManager.allocateByproduct(
           recipeId,
           poolDemandRate,
-          conversionRatio,
           demandedItemId,
         );
 

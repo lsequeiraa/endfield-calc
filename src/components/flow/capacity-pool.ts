@@ -120,10 +120,12 @@ export class CapacityPoolManager {
    * the main loop or first-visit in allocateFromPool) or if its primary
    * capacity has been consumed by a prior allocate() call.
    *
-   * The conversionRatio (byproductAmount / primaryAmount) converts between
-   * primary output units and byproduct units. Allocation is tracked per
-   * facility to prevent over-allocation when multiple consumers demand the
-   * same byproduct.
+   * All tracking is in primary output units — one recipe execution produces
+   * both primary and byproduct outputs, so byproduct capacity is 1:1 with
+   * primary output rate. The caller is responsible for converting between
+   * byproduct units and primary units before calling and after receiving
+   * results. Allocation is tracked per facility to prevent over-allocation
+   * when multiple consumers demand the same byproduct.
    *
    * If demand exceeds the free byproduct from running facilities, the caller
    * should follow up with a regular allocate() call for the remainder to
@@ -138,7 +140,6 @@ export class CapacityPoolManager {
   allocateByproduct(
     nodeKey: string,
     demandRate: number,
-    conversionRatio: number,
     demandedItemId: string,
     forceRunning = false,
   ): AllocationResult[] {
@@ -163,15 +164,18 @@ export class CapacityPoolManager {
         if (!isRunning) continue;
       }
 
-      // Total byproduct this facility produces when running
-      const totalByproduct = facility.actualOutputRate * conversionRatio;
+      // Byproduct capacity in primary output units. One recipe execution
+      // produces both primary and byproduct outputs, so byproduct capacity
+      // equals the primary output rate. The caller converts demand to primary
+      // units before calling and converts results back afterward.
+      const byproductCapacity = facility.actualOutputRate;
 
       // Subtract byproduct already allocated from this facility for this item.
       // Keyed by item ID (not recipe) so different byproducts from the same
       // recipe are tracked independently.
       const trackingKey = `${facility.facilityId}:${demandedItemId}`;
       const alreadyAllocated = this.byproductAllocated.get(trackingKey) || 0;
-      const available = totalByproduct - alreadyAllocated;
+      const available = byproductCapacity - alreadyAllocated;
 
       if (available <= 0.001) continue;
 
