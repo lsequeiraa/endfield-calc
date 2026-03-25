@@ -128,12 +128,19 @@ export class CapacityPoolManager {
    * If demand exceeds the free byproduct from running facilities, the caller
    * should follow up with a regular allocate() call for the remainder to
    * activate new facility instances.
+   *
+   * @param forceRunning When true, treat ALL facilities as running regardless
+   *   of their processed/capacity state. Used for backward cycle edges where
+   *   the SCC solver has already determined these facilities will run — their
+   *   byproduct is guaranteed to be available even if the facility hasn't been
+   *   visited yet in the current mapper pass.
    */
   allocateByproduct(
     nodeKey: string,
     demandRate: number,
     conversionRatio: number,
     demandedItemId: string,
+    forceRunning = false,
   ): AllocationResult[] {
     const pool = this.pools.get(nodeKey);
     if (!pool) return [];
@@ -145,12 +152,16 @@ export class CapacityPoolManager {
       if (remainingDemand <= 0.001) break;
 
       // A facility is "running" if it's been processed (main loop or
-      // first-visit) or if its capacity has been consumed by allocate()
-      const isRunning =
-        this.processedFacilities.has(facility.facilityId) ||
-        facility.remainingCapacity < facility.actualOutputRate - 0.001;
+      // first-visit) or if its capacity has been consumed by allocate().
+      // When forceRunning is set (backward cycle edges), skip this check
+      // entirely — the SCC solver guarantees these facilities will run.
+      if (!forceRunning) {
+        const isRunning =
+          this.processedFacilities.has(facility.facilityId) ||
+          facility.remainingCapacity < facility.actualOutputRate - 0.001;
 
-      if (!isRunning) continue;
+        if (!isRunning) continue;
+      }
 
       // Total byproduct this facility produces when running
       const totalByproduct = facility.actualOutputRate * conversionRatio;
